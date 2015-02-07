@@ -176,7 +176,7 @@ HeightBuffer = class(function(a, scale, baselevel, gravity, density)
   end
   a.heights = heights
   -- a.possibleCoordinates = possibles
-  Spring.Echo("new height buffer created", w, " by ", h)
+  Spring.Echo("new height buffer created", a.w, " by ", a.h)
 end)
 
 Meteor = class(function(a, buf, x, y, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
@@ -250,7 +250,7 @@ CumulativeNoise = class(function(a, length)
     if math.abs(acc) > a.absMaxValue then a.absMaxValue = math.abs(acc) end
     local n = i + offset
     if n > length then n = n - length end
-    Spring.Echo(i, n, offset, length)
+    -- Spring.Echo(i, n, offset, length)
     a.values[n] = acc+0
   end
 end)
@@ -326,7 +326,6 @@ function Meteor:Crater()
   self.noise2 = CumulativeNoise(32)
   self.noise3 = CumulativeNoise(24)
   -- self:CreateRadialNoise()
-  Spring.Echo(self.radialNoiseMax)
   local startingHeight = self.buf:CircleHeight(self.x, self.y, self.craterRadius)
   local newHeights = {}
   local newAlphas = {}
@@ -381,8 +380,7 @@ function Meteor:Crater()
   end
 end
 
-function HeightBuffer:AddHeight(x, y, height, alpha)
-  alpha = alpha or 1
+function HeightBuffer:CoordsOkay(x, y)
   if not self.heights[x] then
     Spring.Echo("no row at ", x)
     return
@@ -391,37 +389,28 @@ function HeightBuffer:AddHeight(x, y, height, alpha)
     Spring.Echo("no pixel at ", x, y)
     return
   end
+  return true
+end
+
+function HeightBuffer:AddHeight(x, y, height, alpha)
+  if not self:CoordsOkay(x, y) then return end
+  alpha = alpha or 1
   self.heights[x][y] = self.heights[x][y] + (height * alpha)
 end
 
 function HeightBuffer:BlendHeight(x, y, height, alpha)
-  if not self.heights[x] then
-    Spring.Echo("no row at ", x)
-    return
-  end
-  if not self.heights[x][y] then
-    Spring.Echo("no pixel at ", x, y)
-    return
-  end
+  if not self:CoordsOkay(x, y) then return end
   local orig = 1 - alpha
   self.heights[x][y] = (self.heights[x][y] * orig) + (height * alpha)
 end
 
 function HeightBuffer:SetHeight(x, y, height)
-  if not self.heights[x] then
-    Spring.Echo("no row at ", x)
-    return
-  end
-  if not self.heights[x][y] then
-    Spring.Echo("no pixel at ", x, y)
-    return
-  end
+  if not self:CoordsOkay(x, y) then return end
   self.heights[x][y] = height
 end
 
 function HeightBuffer:GetHeight(x, y)
-  if not self.heights[x] then return end
-  if not self.heights[x][y] then return end
+  if not self:CoordsOkay(x, y) then return end
   return self.heights[x][y]
 end
 
@@ -568,11 +557,6 @@ end
 if gadgetHandler:IsSyncedCode() then 
 
 function gadget:Initialize()
-  for dx = -1, 1 do
-    for dy = -1, 1 do
-      Spring.Echo(dx, dy, AngleDXDY(dx, dy))
-    end
-  end
   buf = HeightBuffer(2.32, 1000)
   buf:Write()
 end
