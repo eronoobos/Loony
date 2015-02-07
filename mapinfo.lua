@@ -18,9 +18,9 @@ local mapinfo = {
 	--startpic   = "", --// deprecated
 	--StartMusic = "", --// deprecated
 
-	maphardness     = 75,
+	maphardness     = 100,
 	notDeformable   = false,
-	gravity         = 100,
+	gravity         = 130,
 	tidalStrength   = 0,
 	maxMetal        = 0.64,
 	extractorRadius = 100.0,

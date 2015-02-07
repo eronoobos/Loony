@@ -157,24 +157,25 @@ end
 
 -- classes: ------------------------------------------------------------------
 
-HeightBuffer = class(function(a, w, h, scale, baselevel, gravity, density)
-  a.w, a.h = w, h
-  a.scale = scale or 8
+HeightBuffer = class(function(a, scale, baselevel, gravity, density)
+  a.w, a.h = (Game.mapSizeX / 8) + 1, (Game.mapSizeZ / 8) + 1
+  a.scale = scale or 1
+  a.heightScale = a.scale * 8
   a.baselevel = baselevel or 0
   a.gravity = gravity or (Game.gravity / 130) * 9.8
   a.density = density or (Game.mapHardness / 100) * 1500
   a.complexDiameter = 3200 / (a.gravity / 9.8)
-  local buf = {}
-  local possibles = {}
-  for i = 1, w do
-    buf[i] = {}
-    for j = 1, h do
-      buf[i][j] = 0
-      table.insert(possibles, {x = i, y = j})
+  local heights = {}
+  -- local possibles = {}
+  for x = 1, a.w do
+    heights[x] = {}
+    for y = 1, a.h do
+      heights[x][y] = 0
+      -- table.insert(possibles, {x = x, y = y})
     end
   end
-  a.heights = buf
-  a.possibleCoordinates = possibles
+  a.heights = heights
+  -- a.possibleCoordinates = possibles
   Spring.Echo("new height buffer created", w, " by ", h)
 end)
 
@@ -212,13 +213,13 @@ Meteor = class(function(a, buf, x, y, diameterImpactor, velocityImpact, angleImp
   a.simpleComplex = math.min(1 + (a.diameterSimple / buf.complexDiameter), 3)
   local simpleMult = 3 - a.simpleComplex
   local complexMult  = a.simpleComplex - 1
-  a.craterRadius = (a.diameterSimple / 2) / buf.scale
+  a.craterRadius = (a.diameterSimple / 2) / buf.heightScale
   a.craterFalloff = a.craterRadius * 0.66
   local depthSimpleAdd = a.depthSimple * simpleMult
   local depthComplexAdd = a.depthComplex * complexMult
   local depth = (depthSimpleAdd + depthComplexAdd) / (simpleMult + complexMult)
-  a.craterDepth = ((depth + a.rimHeightSimple)  ) / buf.scale
-  a.craterRimHeight = a.rimHeightSimple / buf.scale
+  a.craterDepth = ((depth + a.rimHeightSimple)  ) / buf.heightScale
+  a.craterRimHeight = a.rimHeightSimple / buf.heightScale
   a.craterPeakHeight = (a.simpleComplex - 2) * a.craterDepth
   a.craterPeakC = (a.craterRadius / 8) ^ 2
   a.rayWidth = 8 / a.craterRadius
@@ -316,10 +317,9 @@ end
 
 function Meteor:Crater()
   local w, h = self.buf.w, self.buf.h
-  local x, y = self.x, self.y
   local totalradius = self.craterRadius + self.craterFalloff
   local totalradiusSq = totalradius * totalradius
-  local xmin, xmax, ymin, ymax = self.buf:DetermineRadiusExtent(x, y, totalradius*(1+self.wobbleAmount))
+  local xmin, xmax, ymin, ymax = self.buf:DetermineRadiusExtent(self.x, self.y, totalradius*(1+self.wobbleAmount))
   local craterRadiusSq = self.craterRadius * self.craterRadius
   local craterFalloffSq = totalradiusSq - craterRadiusSq
   self.noise1 = CumulativeNoise(16)
@@ -327,21 +327,21 @@ function Meteor:Crater()
   self.noise3 = CumulativeNoise(24)
   -- self:CreateRadialNoise()
   Spring.Echo(self.radialNoiseMax)
-  local startingHeight = self.buf:CircleHeight(x, y, self.craterRadius)
+  local startingHeight = self.buf:CircleHeight(self.x, self.y, self.craterRadius)
   local newHeights = {}
   local newAlphas = {}
   local diameterTransientFourth = self.diameterTransient ^ 4
-  for i=xmin,xmax do
-    newHeights[i] = {}
-    newAlphas[i] = {}
-    for j=ymin,ymax do
-      local origHeight = self.buf:GetHeight(i, j) - startingHeight
-      local dx, dy = i-x, j-y
+  for x=xmin,xmax do
+    newHeights[x] = {}
+    newAlphas[x] = {}
+    for y=ymin,ymax do
+      local origHeight = self.buf:GetHeight(x, y) - startingHeight
+      local dx, dy = x-self.x, y-self.y
       local angle = AngleDXDY(dx, dy)
       -- local wobbly = math.sin((angle*self.wobbleFreq)+self.wobbleOffset) * self.wobbleAmount
       local wobbly =  self.noise1:RadialNoise(angle) * self.wobbleAmount --self:GetRadialNoise(angle)
       local rayWobbly = self.noise3:RadialNoise(angle) * self.rayWobbleAmount
-      local realDistSq = self:GetDistanceSq(i, j)
+      local realDistSq = self:GetDistanceSq(x, y)
       local distSq = realDistSq * (1 + wobbly)
       local rimRatio = distSq / craterRadiusSq
       local wobbly2 = self.noise2:RadialNoise(angle) * self.wobbleAmount2 * rimRatio
@@ -369,17 +369,16 @@ function Meteor:Crater()
         end
       end
       height = height * (1 + wobbly2)
-      newHeights[i][j] = height
-      newAlphas[i][j] = alpha
+      newHeights[x][y] = height
+      newAlphas[x][y] = alpha
     end
   end
-  for i=xmin,xmax do
-    for j=ymin,ymax do
-      -- self.buf:AddHeight(i, j, newHeights[i][j], newAlphas[i][j])
-      self.buf:BlendHeight(i, j, newHeights[i][j]+startingHeight, newAlphas[i][j])
+  for x=xmin,xmax do
+    for y=ymin,ymax do
+      -- self.buf:AddHeight(x, y, newHeights[x][y], newAlphas[x][y])
+      self.buf:BlendHeight(x, y, newHeights[x][y]+startingHeight, newAlphas[x][y])
     end
   end
-
 end
 
 function HeightBuffer:AddHeight(x, y, height, alpha)
@@ -493,15 +492,15 @@ function HeightBuffer:Blur(radius)
     end
   end
   local newHeights = {}
-  for i = 1, self.w do
-    for j = 1, self.h do
-      local center = self:GetHeight(i, j)
+  for x = 1, self.w do
+    for y = 1, self.h do
+      local center = self:GetHeight(x, y)
       local totalWeight = 0
       local totalHeight = 0
       local same = true
       for ii = -sradius, sradius do
         for jj = -sradius, sradius do
-          local h = self:GetHeight(i+ii, j+jj)
+          local h = self:GetHeight(x+ii, y+jj)
           if h then
             if h ~= center then same = false end
             local weight = weights[ii][jj]
@@ -516,13 +515,13 @@ function HeightBuffer:Blur(radius)
       else
         newH = totalHeight / totalWeight
       end
-      newHeights[i] = newHeights[i] or {}
-      newHeights[i][j] = newH
+      newHeights[x] = newHeights[x] or {}
+      newHeights[x][y] = newH
     end
   end
-  for i = 1, self.w do
-    for j = 1, self.h do
-      self:SetHeight(i, j, newHeights[i][j])
+  for x = 1, self.w do
+    for y = 1, self.h do
+      self:SetHeight(x, y, newHeights[x][y])
     end
   end
 end
@@ -530,11 +529,11 @@ end
 function HeightBuffer:Write()
   Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.baselevel)
   Spring.SetHeightMapFunc(function()
-    for x=0,Game.mapSizeX, Game.squareSize do
-      for z=Game.mapSizeZ,0, -Game.squareSize do
-        local i, j = XZtoXY(x, z)
-        local height = (self:GetHeight(i, j) or 0) * 8 -- because the horizontal is all scaled to the heightmap
-        Spring.SetHeightMap( x, z, self.baselevel+height)
+    for sx=0,Game.mapSizeX, Game.squareSize do
+      for sz=Game.mapSizeZ,0, -Game.squareSize do
+        local x, y = XZtoXY(sx, sz)
+        local height = (self:GetHeight(x, y) or 0) * 8 -- because the horizontal is all scaled to the heightmap
+        Spring.SetHeightMap(sx, sz, self.baselevel+height)
       end
     end
   end)
@@ -542,20 +541,20 @@ function HeightBuffer:Write()
 end
 
 function HeightBuffer:Read()
-  for x=0,Game.mapSizeX, Game.squareSize do
-    for z=Game.mapSizeZ,0, -Game.squareSize do
-      local i, j = XZtoXY(x, z)
-      local height = (Spring.GetGroundHeight(x, z) - self.baselevel) / 8
-      self:SetHeight(i, j, height)
+  for sx=0,Game.mapSizeX, Game.squareSize do
+    for sz=Game.mapSizeZ,0, -Game.squareSize do
+      local x, y = XZtoXY(sx, sz)
+      local height = (Spring.GetGroundHeight(sx, sz) - self.baselevel) / 8
+      self:SetHeight(x, y, height)
     end
   end
   Spring.Echo("height buffer read from map")
 end
 
 function HeightBuffer:Clear()
-  for i = 1, self.w do
-    for j = 1, self.h do
-      self:SetHeight(i, j, 0)
+  for x = 1, self.w do
+    for y = 1, self.h do
+      self:SetHeight(x, y, 0)
     end
   end
 end
@@ -574,7 +573,7 @@ function gadget:Initialize()
       Spring.Echo(dx, dy, AngleDXDY(dx, dy))
     end
   end
-  buf = HeightBuffer((Game.mapSizeX / 8) + 1, (Game.mapSizeZ / 8) + 1, 18.6, 1000, 9.8, 1500)
+  buf = HeightBuffer(2.32, 1000)
   buf:Write()
 end
 
@@ -585,7 +584,7 @@ function gadget:RecvLuaMsg(msg, playerID)
     local command = words[2]
     if command == "meteor" then
       local x, y = XZtoXY(words[3], words[4])
-      local diameter = (words[5] * 2) * (buf.scale / 8)
+      local diameter = (words[5] * 2) * buf.scale
       local m = Meteor(buf, x, y, diameter)
       m:Impact()
       buf:Write()
