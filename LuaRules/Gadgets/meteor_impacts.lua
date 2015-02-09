@@ -20,6 +20,9 @@ local piSixteenth = math.pi / 16
 local atan2 = math.atan2
 local twoSqrtTwo = 2 * math.sqrt(2)
 local naturalE = math.exp(1)
+local function mod(one, two)
+  return one % two
+end
 
 local tInsert = table.insert
 local tRemove = table.remove
@@ -36,7 +39,27 @@ local sqrts = {}
 local gaussians = {}
 local angles = {}
 
+local le = {}
+
 -- common functions:
+
+do
+  function le.uint32(n)
+    return string.char( mod(n,256), mod(n,65536)/256, mod(n, 16777216)/65536,n/16777216 )
+  end
+
+  function le.uint16(n)
+    return string.char( mod(n,256), mod(n,65536)/256 )
+  end
+
+  function le.uint16rev(n)
+    return string.char( mod(n,65536)/256, mod(n,256) )
+  end
+
+  function le.uint8(n)
+    return string.char( mod(n,256) )
+  end
+end
 
 local function sqrt(number)
   sqrts[number] = sqrts[number] or math.sqrt(number)
@@ -59,8 +82,6 @@ local function AngleAdd(angle1, angle2)
   if angle < -pi then angle = angle + twicePi end
   return angle
 end
-
-
 
 local function tDuplicate(sourceTable)
   local duplicate = {}
@@ -175,6 +196,8 @@ HeightBuffer = class(function(a, scale, baselevel, gravity, density)
     end
   end
   a.heights = heights
+  a.maxHeight = -99999
+  a.minHeight = 99999
   -- a.possibleCoordinates = possibles
   Spring.Echo("new height buffer created", a.w, " by ", a.h)
 end)
@@ -348,19 +371,20 @@ function Meteor:Crater()
       local height = 0
       local alpha = 1
       local rayWidth = self.rayWidth * (1+rayWobbly)
+      local rimHeight = self.craterRimHeight * (1+wobbly2)
+      local rayHeight = (angle % rayWidth) * self.rayHeight * (1+wobbly) * rimRatio
       if distSq < craterRadiusSq then
         height = 1 - (rimRatio^self.simpleComplex)
-        height = self.craterRimHeight - (height*self.craterDepth)
+        height = rimHeight - (height*self.craterDepth)
         if self.simpleComplex > 2 then
-          height = height + (self.craterPeakHeight * Gaussian(distSq, self.craterPeakC) * (1 + wobbly2))
+          height = height + (self.craterPeakHeight * Gaussian(distSq, self.craterPeakC) * (1 + wobbly))
         end
-        local rayHeight = (angle % rayWidth) * self.rayHeight * (1+wobbly2) * rimRatio
         height = height + rayHeight
       else
         local fallDistSq = distSq - craterRadiusSq
         if fallDistSq < craterFalloffSq then
-          local fallscale = (fallDistSq / craterFalloffSq) ^ 0.33
-          height = self.craterRimHeight
+          local fallscale = (fallDistSq / craterFalloffSq) ^ 0.3
+          height = rimHeight + (rayHeight * (1 - fallscale)^2)
           -- height = diameterTransientFourth / (112 * (fallDistSq^1.5))
           alpha = 1 - fallscale
         else
@@ -382,31 +406,41 @@ end
 
 function HeightBuffer:CoordsOkay(x, y)
   if not self.heights[x] then
-    Spring.Echo("no row at ", x)
+    -- Spring.Echo("no row at ", x)
     return
   end
   if not self.heights[x][y] then
-    Spring.Echo("no pixel at ", x, y)
+    -- Spring.Echo("no pixel at ", x, y)
     return
   end
   return true
 end
 
+function HeightBuffer:HeightMinMaxCheck(height)
+  if height > self.maxHeight then self.maxHeight = height end
+  if height < self.minHeight then self.minHeight = height end
+end
+
 function HeightBuffer:AddHeight(x, y, height, alpha)
   if not self:CoordsOkay(x, y) then return end
   alpha = alpha or 1
-  self.heights[x][y] = self.heights[x][y] + (height * alpha)
+  local newHeight = self.heights[x][y] + (height * alpha)
+  self.heights[x][y] = newHeight
+  self:HeightMinMaxCheck(newHeight)
 end
 
 function HeightBuffer:BlendHeight(x, y, height, alpha)
   if not self:CoordsOkay(x, y) then return end
   local orig = 1 - alpha
-  self.heights[x][y] = (self.heights[x][y] * orig) + (height * alpha)
+  local newHeight = (self.heights[x][y] * orig) + (height * alpha)
+  self.heights[x][y] = newHeight
+  self:HeightMinMaxCheck(newHeight)
 end
 
 function HeightBuffer:SetHeight(x, y, height)
   if not self:CoordsOkay(x, y) then return end
   self.heights[x][y] = height
+  self:HeightMinMaxCheck(height)
 end
 
 function HeightBuffer:GetHeight(x, y)
@@ -471,12 +505,13 @@ function HeightBuffer:Blur(radius)
   radius = radius or 1
   local sradius = math.ceil(radius * 2.57)
   local radiusTwoSq = radius * radius * 2
+  local radiusTwoSqPi = radiusTwoSq * pi
   local weights = {}
   for dx = -sradius, sradius do
     weights[dx] = {}
     for dy = -sradius, sradius do
       local distSq = (dx*dx) + (dy*dy)
-      local weight = math.exp(-distSq / radiusTwoSq) / (pi * radiusTwoSq)
+      local weight = math.exp(-distSq / radiusTwoSq) / radiusTwoSqPi
       weights[dx][dy] = weight
     end
   end
@@ -487,21 +522,30 @@ function HeightBuffer:Blur(radius)
       local totalWeight = 0
       local totalHeight = 0
       local same = true
-      for ii = -sradius, sradius do
-        for jj = -sradius, sradius do
-          local h = self:GetHeight(x+ii, y+jj)
-          if h then
-            if h ~= center then same = false end
-            local weight = weights[ii][jj]
-            totalHeight = totalHeight + (h * weight)
-            totalWeight = totalWeight + weight
+      for dx = -sradius, sradius do
+        for dy = -sradius, sradius do
+          local h = self:GetHeight(x+dx, y+dy)
+          if h ~= center then
+            same = false
+            break
           end
         end
+        if not same then break end
       end
       local newH
       if same then
         newH = center
       else
+        for dx = -sradius, sradius do
+          for dy = -sradius, sradius do
+            local h = self:GetHeight(x+dx, y+dy)
+            if h then
+              local weight = weights[dx][dy]
+              totalHeight = totalHeight + (h * weight)
+              totalWeight = totalWeight + weight
+            end
+          end
+        end
         newH = totalHeight / totalWeight
       end
       newHeights[x] = newHeights[x] or {}
@@ -538,6 +582,32 @@ function HeightBuffer:Read()
     end
   end
   Spring.Echo("height buffer read from map")
+end
+
+function HeightBuffer:SendHeightPGM()
+  local maxvalue = (2 ^ 16) - 1
+  SendToUnsynced("BeginPGM", "height")
+  SendToUnsynced("PiecePGM", "P5 " .. tostring(self.w) .. " " .. tostring(self.h) .. " " .. maxvalue .. " ")
+  local heightDif = (self.maxHeight - self.minHeight)
+  local normalized = {}
+  for x = 1, self.w do
+     normalized[x] = {}
+     for y = 1, self.h do
+        local pixelHeight = self:GetHeight(x, y)
+        local pixelColor = math.floor(((pixelHeight - self.minHeight) / heightDif) * maxvalue)
+        normalized[x][y] = pixelColor
+     end
+  end
+  local dataString = "P5 " .. tostring(self.w) .. " " .. tostring(self.h) .. " " .. maxvalue .. " "
+  for y = self.h, 1, -1 do
+    local row = ""
+    for x = 1, self.w do
+      local twochars = le.uint16rev(normalized[x][y] or 0)
+      row = row .. twochars
+    end
+    SendToUnsynced("PiecePGM", row)
+  end
+  SendToUnsynced("EndPGM")
 end
 
 function HeightBuffer:Clear()
@@ -584,6 +654,8 @@ function gadget:RecvLuaMsg(msg, playerID)
       buf:Write()
     elseif command == "read" then
       buf:Read()
+    elseif command == "heightpgm" then
+      buf:SendHeightPGM()
     end
   end
 end
@@ -595,5 +667,23 @@ end
 -- unsynced ------------------------------------------------------------------
 
 if not gadgetHandler:IsSyncedCode() then
+  
+local function PiecePGMToLuaUI(_, dataString)
+  Script.LuaUI.ReceivePiecePGM(dataString)
+end
+
+local function BeginPGMToLuaUI(_, name)
+  Script.LuaUI.ReceiveBeginPGM(name)
+end
+
+local function EndPGMToLuaUI(_)
+  Script.LuaUI.ReceiveEndPGM()
+end
+
+function gadget:Initialize()
+  gadgetHandler:AddSyncAction('PiecePGM', PiecePGMToLuaUI)
+  gadgetHandler:AddSyncAction('BeginPGM', BeginPGMToLuaUI)
+  gadgetHandler:AddSyncAction('EndPGM', EndPGMToLuaUI)
+end
 
 end

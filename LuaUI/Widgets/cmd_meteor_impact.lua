@@ -13,6 +13,8 @@ end
 local asciis = {}
 local clocks = {}
 local meteor
+local currentFile
+local currentFilename
 
 local function StartClock(thing)
 	clocks[thing] = Spring.GetTimer()
@@ -64,6 +66,27 @@ local function EndMeteor()
 	end
 end
 
+local function ReceiveBeginPGM(name)
+	name = name or ""
+	currentFilename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. ".pgm")
+	currentFile = assert(io.open(currentFilename,'wb'), "Unable to save to "..currentFilename)
+end
+
+local function ReceivePiecePGM(dataString)
+	currentFile:write(dataString)
+end
+
+local function ReceiveEndPGM()
+	currentFile:close()
+	Spring.Echo("pgm data written to " .. currentFilename)
+end
+
+function widget:Initialize()
+	widgetHandler:RegisterGlobal("ReceiveBeginPGM", ReceiveBeginPGM)
+	widgetHandler:RegisterGlobal("ReceivePiecePGM", ReceivePiecePGM)
+	widgetHandler:RegisterGlobal("ReceiveEndPGM", ReceiveEndPGM)
+end
+
 function widget:KeyPress(key, mods, isRepeat)
 	if isRepeat == false then
 		if key == ascii(",") then
@@ -74,6 +97,16 @@ function widget:KeyPress(key, mods, isRepeat)
 			LoonyCommand("clear")
 		elseif key == ascii("'") then
 			LoonyCommand("read")
+		elseif key == ascii(";") then
+			for i, p in pairs(Spring.GetGameRulesParams()) do
+				if type(p) == "table" then
+					for name, param in pairs(p) do
+						Spring.Echo(i, name, param)
+					end
+				else
+					Spring.Echo(i, p)
+				end
+			end
 		end
 	end
 end
