@@ -1,0 +1,4 @@
+- switch gadget to widget (or unsynced?). needs to have direct access to files. sending full resolution images piece by piece via SendToUnsynced is too slow, crashes. indirect access to spring ground heights would be fine, much less data to ferry.
+- make less janky resolution localization for rendering (just precalculate it all, save by elmosPerPixel)
+- clean up per-pixel rendering code
+- do proper luaui command ms counting

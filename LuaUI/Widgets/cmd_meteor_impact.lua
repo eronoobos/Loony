@@ -15,6 +15,7 @@ local clocks = {}
 local meteor
 local currentFile
 local currentFilename
+local currentMeteors = {}
 
 local function StartClock(thing)
 	clocks[thing] = Spring.GetTimer()
@@ -81,10 +82,26 @@ local function ReceiveEndPGM()
 	Spring.Echo("pgm data written to " .. currentFilename)
 end
 
+local function ReceiveMeteor(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
+	local m = { x = sx, z = sz, diameterSpring = diameterSpring, velocityImpact = velocityImpact, angleImpact = angleImpact, densityImpactor = densityImpactor, age = age, radius = diameterSpring / 2, y = Spring.GetGroundHeight(sx, sz) }
+	table.insert(currentMeteors, m)
+end
+
+local function ReceiveClearMeteors()
+	currentMeteors = {}
+end
+
+local function ReceiveCompleteCommand(command)
+	EndClocks()
+end
+
 function widget:Initialize()
 	widgetHandler:RegisterGlobal("ReceiveBeginPGM", ReceiveBeginPGM)
 	widgetHandler:RegisterGlobal("ReceivePiecePGM", ReceivePiecePGM)
 	widgetHandler:RegisterGlobal("ReceiveEndPGM", ReceiveEndPGM)
+	widgetHandler:RegisterGlobal("ReceiveMeteor", ReceiveMeteor)
+	widgetHandler:RegisterGlobal("ReceiveClearMeteors", ReceiveClearMeteors)
+	widgetHandler:RegisterGlobal("ReceiveCompleteCommand", ReceiveCompleteCommand)
 end
 
 function widget:KeyPress(key, mods, isRepeat)
@@ -98,15 +115,7 @@ function widget:KeyPress(key, mods, isRepeat)
 		elseif key == ascii("'") then
 			LoonyCommand("read")
 		elseif key == ascii(";") then
-			for i, p in pairs(Spring.GetGameRulesParams()) do
-				if type(p) == "table" then
-					for name, param in pairs(p) do
-						Spring.Echo(i, name, param)
-					end
-				else
-					Spring.Echo(i, p)
-				end
-			end
+			LoonyCommand("bypasstoggle")
 		end
 	end
 end
@@ -135,13 +144,18 @@ function widget:DrawWorld()
 	gl.Color(1, 0, 0, 1)
 	gl.DrawGroundCircle(meteor.x, meteor.y, meteor.z, meteor.radius, 8)
 	gl.LineWidth(1)
+	gl.Color(0, 1, 0, 1)
+	for i, m in pairs(currentMeteors) do
+		gl.DrawGroundCircle(meteor.x, meteor.y, meteor.z, meteor.radius, 8)
+	end
+	gl.LineWidth(1)
 	gl.Color(1, 1, 1, 0.5)
 	gl.PopMatrix()
 	gl.DepthTest(true)
 end
 
 function widget:GameFrame(frame)
-	EndClocks()
+	-- EndClocks()
 end
 
 function widget:TextCommand(command)
