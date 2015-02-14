@@ -34,6 +34,7 @@ local radiansPerAngle = math.pi / 180
 local myWorld
 local bypassSpring = false
 local pixelsPerFrame = 3000
+local attributePixelsPerFrame = 10000
 local commandsWaiting = {}
 
 local diffDistances = {}
@@ -231,14 +232,13 @@ end)
 AttributeBuffer = class(function(a, world)
   a.world = world
   a.w, a.h = Game.mapSizeX, Game.mapSizeZ
-  local attributes = {}
+  a.attributes = {}
   for x = 1, a.w do
-    attributes[x] = {}
+    a.attributes[x] = {}
     for y = 1, a.h do
-      attributes[x][y] = 0
+      a.attributes[x][y] = 0
     end
   end
-  a.attributes = attributes
 end)
 
 HeightBuffer = class(function(a, world, fullResolution)
@@ -247,16 +247,16 @@ HeightBuffer = class(function(a, world, fullResolution)
   if fullResolution then
     a.elmosPerPixel = 1
     a.w, a.h = Game.mapSizeX, Game.mapSizeZ
+  else
+    a.w, a.h = (Game.mapSizeX / a.elmosPerPixel) + 1, (Game.mapSizeZ / a.elmosPerPixel) + 1
   end
-  a.w, a.h = (Game.mapSizeX / a.elmosPerPixel) + 1, (Game.mapSizeZ / a.elmosPerPixel) + 1
-  local heights = {}
+  a.heights = {}
   for x = 1, a.w do
-    heights[x] = {}
+    a.heights[x] = {}
     for y = 1, a.h do
-      heights[x][y] = 0
+      a.heights[x][y] = 0
     end
   end
-  a.heights = heights
   a.maxHeight = -99999
   a.minHeight = 99999
   Spring.Echo("new height buffer created", a.w, " by ", a.h)
@@ -380,14 +380,18 @@ function World:RenderSpring()
   self.postRender = "spring"
 end
 
-function World:RenderFull()
+function World:RenderAttributes(elmosPerPixel)
   self.meteorsToRender = {}
-  if not self.heiFull then self.heiFull = HeightBuffer(self, true) end
-  if not self.att then self.att = AttributeBuffer(self) end
+  self.postRender = "none"
   for i, m in ipairs(self.meteors) do
-    m:Impact(self.heiFull, self.att)
+    m:SetToRender(elmosPerPixel, self.hei)
   end
-  self.postRender = "fullpgm"
+  self.renderWidth = (Game.mapSizeX / elmosPerPixel) + 1
+  self.renderHeight = (Game.mapSizeZ / elmosPerPixel) + 1
+  self.pixelsToRenderCount = self.renderWidth * self.renderHeight
+  self.totalPixels = self.pixelsToRenderCount+0
+  SendToUnsynced("BeginPGM", "attrib")
+  SendToUnsynced("PiecePGM", "P6 " .. tostring(self.renderWidth) .. " " .. tostring(self.renderHeight) .. " 255 ")
 end
 
 --------------------------------------
@@ -557,20 +561,13 @@ function HeightBuffer:SendPGM()
   SendToUnsynced("BeginPGM", "height")
   SendToUnsynced("PiecePGM", "P5 " .. tostring(self.w) .. " " .. tostring(self.h) .. " " .. maxvalue .. " ")
   local heightDif = (self.maxHeight - self.minHeight)
-  local normalized = {}
-  for x = 1, self.w do
-     normalized[x] = {}
-     for y = 1, self.h do
-        local pixelHeight = self:Get(x, y)
-        local pixelColor = math.floor(((pixelHeight - self.minHeight) / heightDif) * maxvalue)
-        normalized[x][y] = pixelColor
-     end
-  end
   local KB = ""
   local bytes = 0
   for y = self.h, 1, -1 do
     for x = 1, self.w do
-      local twochars = le.uint16rev(normalized[x][y] or 0)
+      local pixelHeight = self:Get(x, y) or self.world.baselevel
+      local pixelColor = math.floor(((pixelHeight - self.minHeight) / heightDif) * maxvalue)
+      local twochars = le.uint16rev(pixelColor)
       KB = KB .. twochars
       bytes = bytes + 2
       if bytes == 1024 then
@@ -715,10 +712,41 @@ function Meteor:Impact(heightBuf, attributeBuf)
     totalRadius = totalradius,
     totalradiusSq = totalradiusSq,
     craterRadiusSq = craterRadiusSq,
+    brecciaRadiusSq = brecciaRadiusSq,
     craterFalloffSq = craterFalloffSq,
     startingHeight = startingHeight,
   }
   tInsert(self.world.meteorsToRender, self)
+end
+
+function Meteor:SetToRender(elmosPerPixel, heightBuf)
+  elmosPerPixel = elmosPerPixel or 8
+  local mx, my = self.hx, self.hy
+  if elmosPerPixel == 1 then mx, my = self.x, self.y end
+  local craterRadius, craterFalloff, craterPeakC, craterRayWidth = self:LocalRadii(heightBuf)
+  local totalradius = craterRadius + craterFalloff
+  local totalradiusSq = totalradius * totalradius
+  local xmin, xmax, ymin, ymax = heightBuf:RadiusBounds(mx, my, totalradius*(1+self.distWobbleAmount))
+  local craterRadiusSq = craterRadius * craterRadius
+  local brecciaRadiusSq = (craterRadius * 0.85) ^ 2
+  local craterFalloffSq = totalradiusSq - craterRadiusSq
+  local startingHeight = heightBuf:GetCircle(mx, my, craterRadius)
+  self.renderData = {
+    mx = mx, my = my,
+    xmin = xmin, xmax = xmax,
+    ymin = ymin, ymax = ymax,
+    craterRadius = craterRadius,
+    craterFalloff = craterFalloff,
+    craterPeakC = craterPeakC,
+    craterRayWidth = craterRayWidth,
+    totalRadius = totalradius,
+    totalradiusSq = totalradiusSq,
+    craterRadiusSq = craterRadiusSq,
+    brecciaRadiusSq = brecciaRadiusSq,
+    craterFalloffSq = craterFalloffSq,
+    startingHeight = startingHeight,
+  }
+  Spring.Echo(xmin, xmax, ymin, ymax)
 end
 
 function Meteor:RenderPixel(pixel)
@@ -771,15 +799,6 @@ function Meteor:RenderPixel(pixel)
   -- Spring.Echo(dx, dy, realDistSq, distSq, craterRadiusSq, rimRatio, rimHeight)
   height = height * (1 + heightWobbly)
   heightBuf:Blend(x, y, height+startingHeight, alpha)
-  if attributeBuf then
-    if distSq < brecciaRadiusSq then
-      attributeBuf:Set(x, y, "Breccia")
-    elseif distSq < craterRadiusSq then
-      attributeBuf:Set(x, y, "InnerRim")
-    elseif distSq < totalradiusSq then
-      attributeBuf:Set(x, y, "EjectaBlanket")
-    end
-  end
 end
 
 function Meteor:RenderOnePixel()
@@ -787,6 +806,36 @@ function Meteor:RenderOnePixel()
   local pixel = table.remove(self.pixelsToRender)
   self:RenderPixel(pixel)
   return true
+end
+
+function Meteor:AttributePixel(x, y)
+  local rd = self.renderData
+  if x < rd.xmin or x > rd.xmax or y < rd.ymin or y > rd.ymax then return 0 end
+  mx, my = rd.mx, rd.my
+  craterRadius = rd.craterRadius
+  craterFalloff = rd.craterFalloff
+  craterPeakC = rd.craterPeakC
+  craterRayWidth = rd.craterRayWidth
+  totalRadius = rd.totalradius
+  totalradiusSq = rd.totalradiusSq
+  craterRadiusSq = rd.craterRadiusSq
+  brecciaRadiusSq = rd.brecciaRadiusSq
+  craterFalloffSq = rd.craterFalloffSq
+  startingHeight = rd.startingHeight
+  local dx, dy = x-mx, y-my
+  local angle = AngleDXDY(dx, dy)
+  local distWobbly = self.noise1:Radial(angle) * self.distWobbleAmount
+  local realDistSq = self:GetDistanceSq(x, y, {elmosPerPixel = 8})
+  -- local realRimRatio = realDistSq / craterRadiusSq
+  local distSq = realDistSq * (1 + distWobbly)
+  if distSq < brecciaRadiusSq then
+    return 1
+  elseif distSq < craterRadiusSq then
+    return 2
+  elseif distSq < totalradiusSq then
+    return 3
+  end
+  return 0
 end
 
 --------------------------------------
@@ -864,8 +913,8 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld.hei:Read()
     elseif command == "heightpgm" then
       myWorld.hei:SendPGM()
-    elseif command == "heightfull" then
-      myWorld:RenderFull()
+    elseif command == "attribpgm" then
+      myWorld:RenderAttributes(8)
     elseif command == "bypasstoggle" then
       bypassSpring = not bypassSpring
       Spring.Echo("bypassSpring is ", tostring(bypassSpring))
@@ -874,6 +923,7 @@ function gadget:RecvLuaMsg(msg, playerID)
 end
 
 function gadget:GameFrame(frame)
+  if #myWorld.meteorsToRender == 0 and myWorld.pixelsToRenderCount == 0 then return end
   local pixelsRendered = 0
   for i = #myWorld.meteorsToRender, 1, -1 do
     local m = myWorld.meteorsToRender[i]
@@ -887,11 +937,50 @@ function gadget:GameFrame(frame)
     if myWorld.postRender == "spring" then
       myWorld.hei:Write()
     elseif myWorld.postRender == "fullpgm" then
+      Spring.Echo("full heightmap and attribute map rendered")
       myWorld.heiFull:SendPGM()
       myWorld.att:SendPGM()
     end
     myWorld.postRender = nil
     EndCommands()
+  end
+  if myWorld.pixelsToRenderCount and myWorld.pixelsToRenderCount > 0 then
+    local pixelsThisFrame = math.min(attributePixelsPerFrame, myWorld.pixelsToRenderCount)
+    local pMin = myWorld.totalPixels - myWorld.pixelsToRenderCount
+    local pMax = pMin + pixelsThisFrame
+    local bytes = 0
+    local KB = ""
+    for p = pMin, pMax do
+      local x = (p % myWorld.renderWidth) + 1
+      local y = myWorld.renderHeight - math.floor(p / myWorld.renderWidth)
+      -- if p < 2000 then Spring.Echo(p, x, y) end
+      local attribute = 0
+      for i, m in ipairs(myWorld.meteors) do
+        local a = m:AttributePixel(x, y)
+        if a ~= 0 then attribute = a end
+      end
+      local aRGB = AttributeDict[attribute].rgb
+      -- local aRGB = {math.floor((x / myWorld.renderWidth) * 255), math.floor((y / myWorld.renderHeight) * 255), math.floor((p / myWorld.totalPixels) * 255)}
+      local r = string.char(aRGB[1])
+      local g = string.char(aRGB[2])
+      local b = string.char(aRGB[3])
+      local threechars = r .. g .. b
+      KB = KB .. threechars
+      bytes = bytes + 3
+      if bytes > 1023 then
+        SendToUnsynced("PiecePGM", KB)
+        bytes = 0
+        KB = ""
+      end
+    end
+    if bytes > 0 then
+      SendToUnsynced("PiecePGM", KB)
+    end
+    myWorld.pixelsToRenderCount = myWorld.pixelsToRenderCount - pixelsThisFrame - 1
+    if myWorld.pixelsToRenderCount == -1 then
+      SendToUnsynced("EndPGM")
+      Spring.Echo("attribute PGM written")
+    end
   end
 end
 
