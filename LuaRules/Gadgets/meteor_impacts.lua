@@ -256,26 +256,40 @@ HeightBuffer = class(function(a, world, mapRuler)
       a.heights[x][y] = 0
     end
   end
-  a.maxHeight = -99999
-  a.minHeight = 99999
+  a.maxHeight = 0
+  a.minHeight = 0
   Spring.Echo("new height buffer created", a.w, " by ", a.h)
 end)
 
-Renderer = class(function(a, world, mapRuler, pixelsPerFrame, renderType, heightBuf)
+Renderer = class(function(a, world, mapRuler, pixelsPerFrame, renderType, heightBuf, noCraters)
   a.world = world
   a.mapRuler = mapRuler
   a.pixelsPerFrame = pixelsPerFrame
   a.renderType = renderType
   a.heightBuf = heightBuf
   a.craters = {}
-  for i, m in ipairs(world.meteors) do
-    table.insert(a.craters, Crater(m, a))
+  a.totalcraterarea = 0
+  if not noCraters then
+    for i, m in ipairs(world.meteors) do
+      local crater = Crater(m, a)
+      table.insert(a.craters, crater)
+      a.totalcraterarea = a.totalcraterarea + crater.area
+    end
   end
+  a.pixelsRendered = 0
   a.pixelsToRenderCount = mapRuler.width * mapRuler.height
   a.totalPixels = a.pixelsToRenderCount+0
   if renderType == "attributes" then
     SendToUnsynced("BeginPGM", "attrib")
     SendToUnsynced("PiecePGM", "P6 " .. tostring(mapRuler.width) .. " " .. tostring(mapRuler.height) .. " 255 ")
+  elseif renderType == "heightimage" then
+    SendToUnsynced("BeginPGM", "height")
+    SendToUnsynced("PiecePGM", "P5 " .. tostring(mapRuler.width) .. " " .. tostring(mapRuler.height) .. " " .. 65535 .. " ")
+  end
+  if renderType == "heightprespring" then
+    a.totalProgress = a.totalcraterarea
+  else
+    a.totalProgress = a.totalPixels
   end
 end)
 
@@ -286,7 +300,7 @@ Crater = class(function(a, meteor, renderer)
   a.x, a.y = renderer.mapRuler:XZtoXY(meteor.sx, meteor.sz)
   a.craterRadius = meteor.craterRadius / elmosPerPixel
   a.craterFalloff = meteor.craterRadius / elmosPerPixel
-  a.craterPeakC = (meteor.craterRadius / 8) ^ 2
+  a.craterPeakC = (a.craterRadius / 8) ^ 2
 
   a.totalradius = a.craterRadius + a.craterFalloff
   a.totalradiusSq = a.totalradius * a.totalradius
@@ -410,11 +424,12 @@ end
 function World:AddMeteor(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
   local m = Meteor(self, sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
   table.insert(self.meteors, m)
-  if bypassSpring then SendToUnsynced(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age) end
+  SendToUnsynced("Meteor", sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
 end
 
 function World:RenderHeightSpring()
-  local renderer = Renderer(self, heightMapRuler, 4000, "heightspring", self.hei)
+  self.hei:Clear()
+  local renderer = Renderer(self, heightMapRuler, 4000, "heightprespring", self.hei)
   table.insert(self.renderers, renderer)
 end
 
@@ -427,12 +442,21 @@ end
 
 function MapRuler:XZtoXY(x, z)
   if self.elmosPerPixel == 1 then
-    local y = (Game.mapSizeZ - z)
-    return x+1, y+1
+    return x+1, (Game.mapSizeZ - z)+1
   else
     local hx = math.floor(x / self.elmosPerPixel) + 1
     local hy = math.floor((Game.mapSizeZ - z) / self.elmosPerPixel) + 1
     return hx, hy
+  end
+end
+
+function MapRuler:XYtoXZ(x, y)
+  if self.elmosPerPixel == 1 then
+    return x-1, (Game.mapSizeZ - (y-1))
+  else
+    local sx = math.floor((x-1) * self.elmosPerPixel)
+    local sz = math.floor(Game.mapSizeZ - ((y-1) * self.elmosPerPixel))
+    return sx, sz
   end
 end
 
@@ -574,7 +598,7 @@ end
 
 function HeightBuffer:Write()
   Spring.Echo(self.minHeight, self.maxHeight, math.floor(self.minHeight * 8), math.floor(self.maxHeight * 8), math.floor(self.minHeight * self.world.metersPerSquare), math.floor(self.maxHeight * self.world.metersPerSquare))
-  Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.world.baselevel)
+  -- Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.world.baselevel)
   Spring.SetHeightMapFunc(function()
     for sx=0,Game.mapSizeX, Game.squareSize do
       for sz=Game.mapSizeZ,0, -Game.squareSize do
@@ -599,58 +623,51 @@ function HeightBuffer:Read()
 end
 
 function HeightBuffer:SendPGM()
-  local maxvalue = (2 ^ 16) - 1
-  SendToUnsynced("BeginPGM", "height")
-  SendToUnsynced("PiecePGM", "P5 " .. tostring(self.w) .. " " .. tostring(self.h) .. " " .. maxvalue .. " ")
-  local heightDif = (self.maxHeight - self.minHeight)
-  local KB = ""
-  local bytes = 0
-  for y = self.h, 1, -1 do
-    for x = 1, self.w do
-      local pixelHeight = self:Get(x, y) or self.world.baselevel
-      local pixelColor = math.floor(((pixelHeight - self.minHeight) / heightDif) * maxvalue)
-      local twochars = le.uint16rev(pixelColor)
-      KB = KB .. twochars
-      bytes = bytes + 2
-      if bytes == 1024 then
-        SendToUnsynced("PiecePGM", KB)
-        bytes = 0
-        KB = ""
-      end
-    end
-  end
-  SendToUnsynced("PiecePGM", KB)
-  SendToUnsynced("EndPGM")
+  table.insert(self.world.renderers, Renderer(self.world, heightMapRuler, 15000, "heightimage", self, true))
 end
 
 function HeightBuffer:Clear()
   for x = 1, self.w do
     for y = 1, self.h do
-      self:Set(x, y, 0)
+      -- self:Set(x, y, 0)
+      self.heights[x][y] = 0
     end
   end
+  self.minHeight = 0
+  self.maxHeight = 0
 end
 
 --------------------------------------
 
 function Renderer:Frame()
   if self.complete then return end
-  if self.renderType == "heightspring" then
-    self:HeightFrame()
+  local progress
+  if self.renderType == "heightprespring" then
+    progress = self:HeightFrame()
+  elseif self.renderType == "heightspring" then
+    progress = self:HeightToSpringFrame()
+  elseif self.renderType == "heightimage" then
+    progress = self:HeightToImageFrame()
   elseif self.renderType == "attributes" then
-    self:AttributeFrame()
+    progress = self:AttributeFrame()
+  end
+  if progress then
+    self.progress = (self.progress or 0) + progress
+    SendToUnsynced("RenderStatus", self.renderType, self.progress, self.totalProgress)
+  else
+    SendToUnsynced("RenderStatus", "none")
   end
 end
 
 function Renderer:HeightFrame()
   if #self.craters == 0 then
-    self.heightBuf:Write()
+    -- Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.world.baselevel)
+    table.insert(self.world.renderers, Renderer(self.world, heightMapRuler, 6000, "heightspring", self.heightBuf))
     self.complete = true
     return
   end
   local pixelsRendered = 0
-  for i = #self.craters, 1, -1 do
-    local c = self.craters[i]
+  for i, c in ipairs(self.craters) do
     while c.currentPixel <= c.area and pixelsRendered <= self.pixelsPerFrame do
       local x, y, height, alpha = c:OneHeightPixel()
       if height then
@@ -658,9 +675,71 @@ function Renderer:HeightFrame()
         pixelsRendered = pixelsRendered + 1
       end
     end
-    if c.currentPixel > c.area then table.remove(self.craters, i) end
-    if pixelsRendered == self.pixelsPerFrame then return end
+    if c.currentPixel > c.area then c.complete = true end
+    if pixelsRendered == self.pixelsPerFrame then break end
   end
+  for i = #self.craters, 1, -1 do
+    local c = self.craters[i]
+    if c.complete then table.remove(self.craters, i) end
+  end
+  return pixelsRendered
+end
+
+function Renderer:HeightToSpringFrame()
+  if self.pixelsToRenderCount <= 0 then
+    Spring.Echo("height buffer written to map")
+    self.complete = true
+    return
+  end
+  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pMin = self.totalPixels - self.pixelsToRenderCount
+  local pMax = pMin + pixelsThisFrame
+  Spring.SetHeightMapFunc(function()
+    for p = pMin, pMax do
+      local x = (p % self.mapRuler.width) + 1
+      local y = self.mapRuler.height - math.floor(p / self.mapRuler.width)
+      local sx, sz = self.mapRuler:XYtoXZ(x, y)
+      local height = (self.heightBuf:Get(x, y) or 0) --* self.elmosPerPixel -- because the horizontal is all scaled to the heightmap
+      Spring.SetHeightMap(sx, sz, self.world.baselevel+height)
+    end
+  end)
+  self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
+  return pixelsThisFrame + 1
+end
+
+function Renderer:HeightToImageFrame()
+  if self.pixelsToRenderCount <= 0 then
+    SendToUnsynced("EndPGM")
+    Spring.Echo("height PGM written")
+    self.complete = true
+    return
+  end
+  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pMin = self.totalPixels - self.pixelsToRenderCount
+  local pMax = pMin + pixelsThisFrame
+  local bytes = 0
+  local KB = ""
+  local heightBuf = self.heightBuf
+  local heightDif = (heightBuf.maxHeight - heightBuf.minHeight)
+  for p = pMin, pMax do
+    local x = (p % self.mapRuler.width) + 1
+    local y = self.mapRuler.height - math.floor(p / self.mapRuler.width)
+    local pixelHeight = heightBuf:Get(x, y) or self.world.baselevel
+    local pixelColor = math.floor(((pixelHeight - heightBuf.minHeight) / heightDif) * 65535)
+    local twochars = le.uint16rev(pixelColor)
+    KB = KB .. twochars
+    bytes = bytes + 2
+    if bytes > 1023 then
+      SendToUnsynced("PiecePGM", KB)
+      bytes = 0
+      KB = ""
+    end
+  end
+  if bytes > 0 then
+    SendToUnsynced("PiecePGM", KB)
+  end
+  self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
+  return pixelsThisFrame + 1
 end
 
 function Renderer:AttributeFrame()
@@ -698,6 +777,7 @@ function Renderer:AttributeFrame()
     SendToUnsynced("PiecePGM", KB)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
+  return pixelsThisFrame + 1
 end
 
 --------------------------------------
@@ -737,18 +817,19 @@ function Crater:HeightPixel(x, y)
   local rimHeight = meteor.craterRimHeight * (1+heightWobbly)
   -- local rayHeight = (angle % rayWidth) * self.rayHeight * (1+distWobbly) * rimRatio
   local rayHeight = math.max(math.sin(rayWidthMult * angle) - 0.75, 0) * meteor.rayHeight * (1+distWobbly) * rimRatio
+  local rimRatioPower = rimRatio^meteor.simpleComplex
   if distSq < self.craterRadiusSq then
-    height = 1 - (rimRatio^meteor.simpleComplex)
+    height = 1 - (rimRatioPower)
     height = rimHeight - (height*meteor.craterDepth)
     if meteor.simpleComplex > 2 then
       height = height + (meteor.craterPeakHeight * Gaussian(distSq, self.craterPeakC) * (1 + distWobbly))
     end
-    height = height + rayHeight
+    height = height - rayHeight
   else
     local fallDistSq = distSq - self.craterRadiusSq
     if fallDistSq < self.craterFalloffSq then
       local fallscale = (fallDistSq / self.craterFalloffSq) ^ 0.3
-      height = rimHeight + (rayHeight * (1 - fallscale)^2)
+      height = rimHeight - (rayHeight * (1 - fallscale)^2)
       -- height = diameterTransientFourth / (112 * (fallDistSq^1.5))
       alpha = 1 - fallscale
     else
@@ -885,17 +966,20 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld:RenderAttributes(8)
     elseif command == "bypasstoggle" then
       bypassSpring = not bypassSpring
-      Spring.Echo("bypassSpring is ", tostring(bypassSpring))
+      Spring.Echo("bypassSpring is now", tostring(bypassSpring))
+      SendToUnsynced("BypassSpring", tostring(bypassSpring))
+      if not bypassSpring then myWorld:RenderHeightSpring() end
     end
   end
 end
 
 function gadget:GameFrame(frame)
-  for i = #myWorld.renderers, 1, -1 do
-    local renderer = myWorld.renderers[i]
+  local renderer = myWorld.renderers[1]
+  if renderer then
     renderer:Frame()
     if renderer.complete then
-      table.remove(myWorld.renderers, i)
+      -- Spring.Echo(renderer.renderType, "complete", #myWorld.renderers)
+      table.remove(myWorld.renderers, 1)
     end
   end
 end
@@ -924,6 +1008,10 @@ local function MeteorToLuaUI(_, sx, sz, diameterSpring, velocityImpact, angleImp
   Script.LuaUI.ReceiveMeteor(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
 end
 
+local function BypassSpringToLuaUI(_, stateString)
+  Script.LuaUI.ReceiveBypassSpring(stateString)
+end
+
 local function ClearMeteorsToLuaUI(_)
   Script.LuaUI.ReceiveClearMeteors()
 end
@@ -932,13 +1020,19 @@ local function CompleteCommandToLuaUI(_, command)
   Script.LuaUI.ReceiveCompleteCommand(command)
 end
 
+local function RenderStatusToLuaUI(_, renderType, progress, total)
+  Script.LuaUI.ReceiveRenderStatus(renderType, progress, total)
+end
+
 function gadget:Initialize()
   gadgetHandler:AddSyncAction('PiecePGM', PiecePGMToLuaUI)
   gadgetHandler:AddSyncAction('BeginPGM', BeginPGMToLuaUI)
   gadgetHandler:AddSyncAction('EndPGM', EndPGMToLuaUI)
   gadgetHandler:AddSyncAction('Meteor', MeteorToLuaUI)
+  gadgetHandler:AddSyncAction('BypassSpring', BypassSpringToLuaUI)
   gadgetHandler:AddSyncAction('ClearMeteors', ClearMeteorsToLuaUI)
   gadgetHandler:AddSyncAction('CompleteCommand', CompleteCommandToLuaUI)
+  gadgetHandler:AddSyncAction('RenderStatus', RenderStatusToLuaUI)
 end
 
 end

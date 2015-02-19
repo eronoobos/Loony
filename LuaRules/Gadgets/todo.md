@@ -1,8 +1,8 @@
-- switch gadget to widget (or unsynced?). needs to have direct access to files. sending full resolution images piece by piece via SendToUnsynced is too slow, crashes. indirect access to spring ground heights would be fine, much less data to ferry.
-- for large images, the memory usage is just too high: the image needs to be rendered one pixel at a time, the whole image in sequence, no changing the same pixel when each different meteor renders. this way nothing needs to be stored in memory, just written to a file or sent to the spring height map.
-- oh wait, it would be real hard to have impacts overlap in the same way if it was done this way. maybe just output the small resolution (for spring) heightmap, and generate a full res attribute map pix by pix. attribute map can simply use the youngest meteor at that pixel's attributes.
-- likewise the stored calculation speedups are probably using a large chuck of memory
+- fix weird rim sharpness on large craters
+- change falloff to gaussian to prevent obvious edges
+- speed up heightpixel
 - crater melt (flat bits in crater w/ different attribute)
-- make less janky resolution localization for rendering (just precalculate it all, save by elmosPerPixel)
-- clean up per-pixel rendering code
 - do proper luaui command ms counting
+- add mirroring (for every meteor added another is added in symmetry on the other side of the map). option between rotational or reflectional symmetry. mirror meteors have slightly modified properties, to make the end map look less boring.
+- add world save / load
+- switch gadget to widget? not sure what's worse, indirect access to map, or to files
