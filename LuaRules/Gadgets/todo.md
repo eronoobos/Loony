@@ -2,6 +2,7 @@
 - for large images, the memory usage is just too high: the image needs to be rendered one pixel at a time, the whole image in sequence, no changing the same pixel when each different meteor renders. this way nothing needs to be stored in memory, just written to a file or sent to the spring height map.
 - oh wait, it would be real hard to have impacts overlap in the same way if it was done this way. maybe just output the small resolution (for spring) heightmap, and generate a full res attribute map pix by pix. attribute map can simply use the youngest meteor at that pixel's attributes.
 - likewise the stored calculation speedups are probably using a large chuck of memory
+- crater melt (flat bits in crater w/ different attribute)
 - make less janky resolution localization for rendering (just precalculate it all, save by elmosPerPixel)
 - clean up per-pixel rendering code
 - do proper luaui command ms counting
