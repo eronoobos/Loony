@@ -1,7 +1,7 @@
-- fix weird rim sharpness on large craters
-- change falloff to gaussian to prevent obvious edges
 - speed up heightpixel
-- crater melt (flat bits in crater w/ different attribute)
+- attribute crater melt
+- use simplex or perlin noise to age craters
+- use simplex or perlin noise in a circle for real wrapable radial noise
 - do proper luaui command ms counting
 - add mirroring (for every meteor added another is added in symmetry on the other side of the map). option between rotational or reflectional symmetry. mirror meteors have slightly modified properties, to make the end map look less boring.
 - add world save / load
