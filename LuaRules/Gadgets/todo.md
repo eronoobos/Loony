@@ -1,7 +1,11 @@
+- split impacts into simple or complex, nothing in between. some randomness in what the exact diameter split is.
+- complex shape:
+	- shorter, spikier, more random central peak. use perlin noise with a radial opacity gradient.
+	- rim terracing (use a by-distance 1D noise?)
+- attributes: breccia, crater melt, central peak, ejecta blanket
+- age craters by flattening their contours and adding a bit of perlin noise
 - speed up heightpixel
-- attribute crater melt
-- use simplex or perlin noise to age craters
-- use simplex or perlin noise in a circle for real wrapable radial noise
+	- replace gaussian with smoothstep?
 - do proper luaui command ms counting
 - add mirroring (for every meteor added another is added in symmetry on the other side of the map). option between rotational or reflectional symmetry. mirror meteors have slightly modified properties, to make the end map look less boring.
 - add world save / load

@@ -10,6 +10,8 @@ function gadget:GetInfo()
    }
 end
 
+include("LuaLib/perlin.lua")
+
 -- localization:
 
 local pi = math.pi
@@ -36,7 +38,6 @@ local myWorld
 local bypassSpring = false
 local commandsWaiting = {}
 local heightMapRuler
-local SimplexNoise
 
 local diffDistances = {}
 local diffDistancesSq = {}
@@ -260,6 +261,7 @@ HeightBuffer = class(function(a, world, mapRuler)
   end
   a.maxHeight = 0
   a.minHeight = 0
+  a.directToSpring = false
   Spring.Echo("new height buffer created", a.w, " by ", a.h)
 end)
 
@@ -320,6 +322,8 @@ Crater = class(function(a, meteor, renderer)
   a.area = a.width * a.height
   a.currentPixel = 0
   -- a.ageNoise = TwoDimensionalNoise(a.width, meteor.ageRatio, a.width)
+  -- perlin2D(seed, width, height, persistence, N, amplitude)
+  -- a.ageNoise = perlin2D(a.radius+a.x+a.y, a.width+1, a.height+1, 0.25, 6, 0.5)
 end)
 
 -- Meteor stores data and does meteor impact model calculations
@@ -330,13 +334,13 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
   a.x, a.y = XZtoXY(a.sx, a.sz)
   a.hx, a.hy = XZtoHXHY(a.sx, a.sz)
 
-  a.distWobbleAmount = MinMaxRandom(0.05, 0.15)
+  a.distWobbleAmount = MinMaxRandom(0.08, 0.18)
   a.heightWobbleAmount = MinMaxRandom(0.1, 0.4)
   a.rayWobbleAmount = MinMaxRandom(0.33, 0.67)
-  a.distNoise = CumulativeNoise(32, a.distWobbleAmount)
-  a.rayNoise = CumulativeNoise(24, a.rayWobbleAmount)
-  a.heightNoise = CumulativeNoise(16, a.heightWobbleAmount)
-  a.blastNoise = CumulativeNoise(96, 0.66)
+  a.distNoise = WrapNoise(32, a.distWobbleAmount)
+  a.rayNoise = WrapNoise(24, a.rayWobbleAmount)
+  a.heightNoise = WrapNoise(16, a.heightWobbleAmount)
+  a.blastNoise = WrapNoise(48, 0.66)
 
   local diameterImpactor = diameterSpring * world.metersPerElmo
   a.diameterImpactor = diameterImpactor or 500
@@ -381,48 +385,33 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
   -- Spring.Echo(a.meltThickness, a.meltVolume, a.energyImpact)
 end)
 
-WrapNoise = class(function(a, length, intensity)
-
-end)
-
-CumulativeNoise = class(function(a, length, intensity, unloopable)
-  a.loopable = not unloopable
+WrapNoise = class(function(a, length, intensity, persistence, N, amplitude)
   a.values = {}
   a.outValues = {}
   a.absMaxValue = 0
-  a.angleDivisor = twicePi / (length)
+  a.angleDivisor = twicePi / length
   a.length = length
   a.intensity = intensity or 1
   a.halfLength = length / 2
-  local offset = 0
-  if a.loopable then offset = math.floor(MinMaxRandom(0, length-1)) end
-  local acc = 0
-  local fade = math.ceil(length / 6)
-  for i = 1, length do
-    local add = 0
-    local mod = 1
-    if i ~= 1 then
-      add = (math.random() * 2) - 1
-      local distFromEnd = (length - i)
-      local mod = 1
-      if a.loopable and distFromEnd < fade then
-        local ratio = distFromEnd / fade
-        mod = 1 - ratio
-      end
-    end
-    acc = acc + add
-    local val = acc * mod
+  persistence = persistence or 0.25
+  N = N or 6
+  amplitude = amplitude or 0.5
+  local radius = math.ceil(length / pi)
+  local diameter = radius * 2
+  local seed = math.floor(math.random()*length*1000)
+  local yx = perlin2D( seed, diameter+1, diameter+1, persistence, N, amplitude )
+  local i = 1
+  local angleIncrement = twicePi / length
+  a.valuesByAngle = {}
+  for angle = -pi, pi, angleIncrement do
+    local x = math.floor(radius + (radius * math.cos(angle))) + 1
+    local y = math.floor(radius + (radius * math.sin(angle))) + 1
+    local val = yx[y][x]
     if math.abs(val) > a.absMaxValue then a.absMaxValue = math.abs(val) end
-    local n = i + offset
-    if n > length then n = n - length end
-    a.values[n] = val+0
+    a.values[i] = val
+    a.valuesByAngle[angle] = val
+    i = i + 1
   end
-  --[[
-  for i = 1, length do
-    a.values[i] = (math.random() * 2) - 1
-  end
-  a.absMaxValue = 1
-  ]]--
   for n, v in ipairs(a.values) do
     a.outValues[n] = (v / a.absMaxValue) * a.intensity
   end
@@ -432,8 +421,8 @@ TwoDimensionalNoise = class(function(a, sideLength, intensity, realSideLength)
   a.sideLength = sideLength
   a.realSideLength = realSideLength
   a.conversion = realSideLength / sideLength
-  a.xNoise = CumulativeNoise(sideLength, intensity, true)
-  a.yNoise = CumulativeNoise(sideLength, intensity, true)
+  a.xNoise = WrapNoise(sideLength, intensity, true)
+  a.yNoise = WrapNoise(sideLength, intensity, true)
 end)
 
 -- end classes ---------------------------------------------------------------
@@ -442,17 +431,20 @@ end)
 
 function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVelocity, minAngle, maxAngle, minDensity, maxDensity)
   number = number or 3
-  minDiameter = minDiameter or 10
-  maxDiameter = maxDiameter or 2000
+  minDiameter = minDiameter or 5
+  maxDiameter = maxDiameter or 5000
   minVelocity = minVelocity or 15
   maxVelocity = maxVelocity or 110
+  minDiameter = minDiameter^0.01
+  maxDiameter = maxDiameter^0.01
   minAngle = minAngle or 10
   maxAngle = maxAngle or 80
   minDensity = minDensity or 4000
   maxDensity = maxDensity or 12000
   local hundredConv = 100 / number
   for n = 1, number do
-    local diameter = MinMaxRandom(minDiameter, maxDiameter)
+    local diameter = MinMaxRandom(minDiameter, maxDiameter)^100
+    Spring.Echo(diameter)
     local velocity = MinMaxRandom(minVelocity, maxVelocity)
     local angle = MinMaxRandom(minAngle, maxAngle)
     local density = MinMaxRandom(minDensity, maxDensity)
@@ -533,12 +525,19 @@ function HeightBuffer:MinMaxCheck(height)
   if height < self.minHeight then self.minHeight = height end
 end
 
+function HeightBuffer:Write(x, y, height)
+  if not self.directToSpring then return end
+  local sx, sz = self.mapRuler:XYtoXZ(x, y)
+  Spring.LevelHeightMap(sx, sz, sx+8, sz-8, self.world.baselevel+height)
+end
+
 function HeightBuffer:Add(x, y, height, alpha)
   if not self:CoordsOkay(x, y) then return end
   alpha = alpha or 1
   local newHeight = self.heights[x][y] + (height * alpha)
   self.heights[x][y] = newHeight
   self:MinMaxCheck(newHeight)
+  self:Write(x, y, newHeight)
 end
 
 function HeightBuffer:Blend(x, y, height, alpha)
@@ -548,12 +547,14 @@ function HeightBuffer:Blend(x, y, height, alpha)
   local newHeight = (self.heights[x][y] * orig) + (height * alpha)
   self.heights[x][y] = newHeight
   self:MinMaxCheck(newHeight)
+  self:Write(x, y, newHeight)
 end
 
 function HeightBuffer:Set(x, y, height)
   if not self:CoordsOkay(x, y) then return end
   self.heights[x][y] = height
   self:MinMaxCheck(height)
+  self:Write(x, y, height)
 end
 
 function HeightBuffer:Get(x, y)
@@ -688,7 +689,9 @@ end
 function Renderer:HeightFrame()
   if #self.craters == 0 then
     -- Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.world.baselevel)
-    table.insert(self.world.renderers, Renderer(self.world, heightMapRuler, 6000, "heightspring", self.heightBuf))
+    if not self.heightBuf.directToSpring then
+      table.insert(self.world.renderers, Renderer(self.world, heightMapRuler, 6000, "heightspring", self.heightBuf))
+    end
     self.complete = true
     return
   end
@@ -868,13 +871,13 @@ function Crater:HeightPixel(x, y)
     -- height = diameterTransientFourth / (112 * (fallDistSq^1.5))
   end
   -- if meteor.age > 0 then
-    -- local ageWobbly = SimplexNoise.Noise2D(x, y) + 1
     -- local ageWobbly = self.ageNoise:Smooth(x - self.xmin, y - self.ymin)
     -- height = height * ageWobbly
     -- if height > 0 then height = height / (1+(ageWobbly * meteor.ageRatio)) end
     -- height = math.mix(height, ((ageWobbly - 0.5) * rimHeight), meteor.ageRatio)
   -- end
   return height, alpha
+  -- return self.ageNoise[y-self.ymin+1][x-self.xmin+1]*100, 1
 end
 
 function Crater:OneHeightPixel()
@@ -929,19 +932,7 @@ end
 
 --------------------------------------
 
-function WrapNoise:Radial(angle)
-  local n = (angle + pi) / self.angleDivisor
-  return self:Get(n)
-end
-
-function WrapNoise:Get(n)
-  n = math.ceil(n)
-  return self.values[n]
-end
-
---------------------------------------
-
-function CumulativeNoise:Smooth(n)
+function WrapNoise:Smooth(n)
   local n1 = math.floor(n)
   local n2 = math.ceil(n)
   if n1 == n2 then return self:Output(n1) end
@@ -953,41 +944,24 @@ function CumulativeNoise:Smooth(n)
   return val1 + (math.smoothstep(n1, n2, n) * d)
 end
 
-function CumulativeNoise:Radial(angle)
+function WrapNoise:Radial(angle)
   local n = ((angle + pi) / self.angleDivisor) + 1
   return self:Smooth(n)
-  -- local dist = 0.6
-  -- local x = dist + dist * math.cos(angle)
-  -- local y = dist + dist * math.sin(angle)
-  -- return ((SimplexNoise.Noise2D(x, y) + 1) / 2) * self.intensity
 end
 
-function CumulativeNoise:Output(n)
+function WrapNoise:Output(n)
   return self.outValues[self:Clamp(n)]
 end
 
-function CumulativeNoise:Dist(n1, n2)
-  if self.loopable then return self:LoopDist(n1, n2) end
-  return math.abs(n2 - n1)
-end
-
-function CumulativeNoise:LoopDist(n1, n2)
+function WrapNoise:Dist(n1, n2)
   return math.abs((n1 + self.halfLength - n2) % self.length - self.halfLength)
 end
 
-function CumulativeNoise:Clamp(n)
-  if self.loopable then
-    if n < 1 then
-      n = n + self.length
-    elseif n > self.length then
-      n = n - self.length
-    end
-  else
-    if n < 1 then
-      n = 1
-    elseif n > self.length then
-      n = self.length
-    end
+function WrapNoise:Clamp(n)
+  if n < 1 then
+    n = n + self.length
+  elseif n > self.length then
+    n = n - self.length
   end
   return n
 end
@@ -1009,8 +983,6 @@ end
 if gadgetHandler:IsSyncedCode() then 
 
 function gadget:Initialize()
-  SimplexNoise = include("LuaLib/SimplexNoise.lua")
-  SimplexNoise.seedP(599)
   -- myWorld = World(2.32, 1000)
   myWorld = World(3, 1000)
   if not bypassSpring then
