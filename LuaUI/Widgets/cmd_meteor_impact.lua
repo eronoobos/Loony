@@ -25,9 +25,15 @@ local function StartClock(thing)
 	clocks[thing] = Spring.GetTimer()
 end
 
+local function EndClock(thing)
+	if not clocks[thing] then return end
+	Spring.Echo(string.format(thing .. " in " .. math.ceil(Spring.DiffTimers(Spring.GetTimer(), clocks[thing], true)) .. "ms"))
+	clocks[thing] = nil
+end
+
 local function EndClocks()
 	for thing, clock in pairs(clocks) do
- 		Spring.Echo(string.format(thing .. " in " .. math.ceil(Spring.DiffTimers(Spring.GetTimer(), clock, true)) .. " ms"))
+ 		Spring.Echo(string.format(thing .. " in " .. math.ceil(Spring.DiffTimers(Spring.GetTimer(), clock, true)) .. "ms"))
  	end
  	clocks = {}
 end
@@ -113,7 +119,7 @@ local function ReceiveClearMeteors()
 end
 
 local function ReceiveCompleteCommand(command)
-	EndClocks()
+	EndClock(command)
 end
 
 local function ReceiveRenderStatus(rt, progress, total)
