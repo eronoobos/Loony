@@ -41,6 +41,31 @@ local sqrts = {}
 local gaussians = {}
 local angles = {}
 
+------------------------------------------------------------------------------
+
+local AttributeDict = {
+  [0] = { name = "None", rgb = {0,0,0} },
+  [1] = { name = "Breccia", rgb = {255,255,255} },
+  [2] = { name = "InnerRim", rgb = {0,255,0} },
+  [3] = { name = "EjectaBlanket", rgb = {0,255,255} },
+  [4] = { name = "Melt", rgb = {255,0,0} },
+  [5] = { name = "ThinEjecta", rgb = {0,0,255} },
+  [6] = { name = "Ray", rgb = {255,255,0} },
+}
+
+local AttributesByName = {}
+for i, entry in pairs(AttributeDict) do
+  local aRGB = entry.rgb
+  local r = string.char(aRGB[1])
+  local g = string.char(aRGB[2])
+  local b = string.char(aRGB[3])
+  local threechars = r .. g .. b
+  AttributeDict[i].threechars = threechars
+  AttributesByName[entry.name] = { index = i, rgb = aRGB, threechars = threechars}
+end
+
+------------------------------------------------------------------------------
+
 -- local functions:
 
 local function uint32little(n)
@@ -136,29 +161,6 @@ end
 
 local function EndCommand(command)
   SendToUnsynced("CompleteCommand", command)
-end
-
-------------------------------------------------------------------------------
-
-local AttributeDict = {
-  [0] = { name = "None", rgb = {0,0,0} },
-  [1] = { name = "Breccia", rgb = {255,255,255} },
-  [2] = { name = "InnerRim", rgb = {0,255,0} },
-  [3] = { name = "EjectaBlanket", rgb = {0,255,255} },
-  [4] = { name = "Melt", rgb = {255,0,0} },
-  [5] = { name = "ThinEjecta", rgb = {0,0,255} },
-  [6] = { name = "Ray", rgb = {255,255,0} },
-}
-
-local AttributesByName = {}
-for i, entry in pairs(AttributeDict) do
-  local aRGB = entry.rgb
-  local r = string.char(aRGB[1])
-  local g = string.char(aRGB[2])
-  local b = string.char(aRGB[3])
-  local threechars = r .. g .. b
-  AttributeDict[i].threechars = threechars
-  AttributesByName[entry.name] = { index = i, rgb = aRGB, threechars = threechars}
 end
 
 ------------------------------------------------------------------------------
@@ -263,12 +265,12 @@ Renderer = class(function(a, world, mapRuler, pixelsPerFrame, renderType, uiComm
   a.renderType = renderType
   a.heightBuf = heightBuf
   a.craters = {}
-  a.totalcraterarea = 0
+  a.totalCraterArea = 0
   if not noCraters then
     for i, m in ipairs(world.meteors) do
       local crater = Crater(m, a)
       table.insert(a.craters, crater)
-      a.totalcraterarea = a.totalcraterarea + crater.area
+      a.totalCraterArea = a.totalCraterArea + crater.area
     end
   end
   a.pixelsRendered = 0
@@ -301,9 +303,9 @@ Crater = class(function(a, meteor, renderer)
   a.blastRadiusSq = (a.totalradius * 4) ^ 2
 
   if meteor.complex then
-    a.peakRadius = a.radius / 5.5
+    a.peakRadius = a.radius / 5
     a.peakRadiusSq = a.peakRadius ^ 2
-    a.peakNoise = TwoDimensionalNoise(a.peakRadius * 2 * (1+meteor.distWobbleAmount) * (1+meteor.peakRadialNoise.intensity), meteor.craterPeakHeight, 0.33, 4, 1, true)
+    a.peakNoise = TwoDimensionalNoise(meteor.peakSeed, a.peakRadius * 2 * (1+meteor.distWobbleAmount) * (1+meteor.peakRadialNoise.intensity), meteor.craterPeakHeight, 0.25, 5, 1, 0.25, 1)
   end
 
   a.width = a.xmax - a.xmin
@@ -325,9 +327,12 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
 
   a.distWobbleAmount = MinMaxRandom(0.1, 0.2)
   a.heightWobbleAmount = MinMaxRandom(0.15, 0.35)
-  a.distNoise = WrapNoise(32, a.distWobbleAmount)
-  a.heightNoise = WrapNoise(16, a.heightWobbleAmount)
-  a.blastNoise = WrapNoise(48, 0.66)
+  a.distSeed = math.floor(math.random() * 1000)
+  a.heightSeed = math.floor(math.random() * 1000)
+  a.blastSeed = math.floor(math.random() * 1000)
+  a.distNoise = WrapNoise(64, a.distWobbleAmount, a.distSeed, 0.33, 5)
+  a.heightNoise = WrapNoise(16, a.heightWobbleAmount, a.heightSeed)
+  a.blastNoise = WrapNoise(48, 0.66, a.blastSeed)
 
   local diameterImpactor = diameterSpring * world.metersPerElmo
   a.diameterImpactor = diameterImpactor or 500
@@ -348,16 +353,18 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
   a.brecciaDepth = 2.8 * a.brecciaVolume * ((a.depthTransient + a.rimHeightTransient) / (a.depthTransient * a.diameterSimple * a.diameterSimple))
   a.depthSimple = a.depthTransient - a.brecciaDepth
 
-  local depth = a.depthSimple
-  a.craterDepth = ((depth + a.rimHeightSimple)  ) / world.metersPerElmo
   a.craterRimHeight = a.rimHeightSimple / world.metersPerElmo
 
   a.complex = a.diameterSimple > world.complexDiameter * RandomVariance(0.1)
   if a.complex then
-    a.terraceNoise = WrapNoise(32, 1, 0.75, 3, 0.5)
     a.bowlPower = 3
-    a.diameterComplex = 1.17 * ((a.diameterTransient ^ 1.13) / (world.complexDiameter ^ 0.13))
-    -- a.depthComplex = 0.4 * (a.diameterSimple ^ 0.3)
+    local Dtc = a.diameterTransient / 1000
+    local Dc = world.complexDiameter / 1000
+    a.diameterComplex = 1.17 * ((Dtc ^ 1.13) / (Dc ^ 0.13))
+    a.depthComplex = 0.4 * (a.diameterComplex ^ 0.3)
+    a.diameterComplex = a.diameterComplex * 1000
+    a.depthComplex = a.depthComplex * 1000
+    a.craterDepth = ((a.depthComplex + a.rimHeightSimple)  ) / world.metersPerElmo
     a.energyImpact = piTwelfth * a.densityImpactor * (a.diameterImpactor ^ 3) * (a.velocityImpact ^ 2)
     a.meltVolume = 8.9 * 10^(-12) * a.energyImpact * math.sin(a.angleImpactRadians)
     a.meltThickness = (4 * a.meltVolume) / (pi * (a.diameterTransient ^ 2))
@@ -365,12 +372,16 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
     a.craterMeltThickness = a.meltThickness / world.metersPerElmo
     a.meltSurface = a.craterRimHeight + a.craterMeltThickness - a.craterDepth
     Spring.Echo(a.meltThickness, a.meltSurface)
-    a.craterPeakHeight = a.craterDepth * 0.5
-    a.peakRadialNoise = WrapNoise(16, 0.75)
+    a.craterPeakHeight = a.craterDepth * 0.67
+    a.peakRadialSeed = math.floor(math.random() * 1000)
+    a.peakRadialNoise = WrapNoise(16, 0.75, a.peakRadialSeed)
+    a.peakSeed = math.floor(math.random() * 1000)
   else
     a.rayWobbleAmount = MinMaxRandom(0.25, 0.5)
-    a.rayNoise = WrapNoise(24, a.rayWobbleAmount)
+    a.raySeed = math.floor(math.random() * 1000)
+    a.rayNoise = WrapNoise(24, a.rayWobbleAmount, a.raySeed)
     a.bowlPower = 1
+    a.craterDepth = ((a.depthSimple + a.rimHeightSimple)  ) / world.metersPerElmo
     a.craterRadius = (a.diameterSimple / 2) / world.metersPerElmo
     a.craterFalloff = a.craterRadius * 0.66
     a.rayWidth = 0.07 -- in radians
@@ -378,20 +389,20 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
   end
 end)
 
-WrapNoise = class(function(a, length, intensity, persistence, N, amplitude)
+WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude)
   a.values = {}
   a.outValues = {}
   a.absMaxValue = 0
   a.angleDivisor = twicePi / length
   a.length = length
   a.intensity = intensity or 1
+  seed = seed or math.floor(math.random()*length*1000)
   a.halfLength = length / 2
   persistence = persistence or 0.25
   N = N or 6
   amplitude = amplitude or 1
   local radius = math.ceil(length / pi)
   local diameter = radius * 2
-  local seed = math.floor(math.random()*length*1000)
   local yx = perlin2D( seed, diameter+1, diameter+1, persistence, N, amplitude )
   local i = 1
   local angleIncrement = twicePi / length
@@ -410,13 +421,15 @@ WrapNoise = class(function(a, length, intensity, persistence, N, amplitude)
   end
 end)
 
-TwoDimensionalNoise = class(function(a, sideLength, intensity, persistence, N, amplitude, normalize)
+TwoDimensionalNoise = class(function(a, seed, sideLength, intensity, persistence, N, amplitude, blackValue, whiteValue, doNotNormalize)
   a.sideLength = math.ceil(sideLength)
-  a.halfSideLength = a.sideLength / 2
+  a.halfSideLength = math.floor(a.sideLength / 2)
   a.intensity = intensity or 1
-  local seed = math.floor(math.random()*sideLength*1000)
+  seed = seed or math.floor(math.random()*sideLength*1000)
   a.yx = perlin2D( seed, sideLength+1, sideLength+1, persistence, N, amplitude )
-  if normalize then
+  blackValue = blackValue or 0
+  whiteValue = whiteValue or 0
+  if not doNotNormalize then
     local vmin, vmax = 0, 0
     for y, xx in ipairs(a.yx) do
       for x, v in ipairs(xx) do
@@ -425,12 +438,15 @@ TwoDimensionalNoise = class(function(a, sideLength, intensity, persistence, N, a
       end
     end
     local vd = vmax - vmin
-    Spring.Echo("vmin", vmin, "vmax", vmax, "vd" , vd)
+    -- Spring.Echo("vmin", vmin, "vmax", vmax, "vd" , vd)
     a.xy = {}
     for y, xx in ipairs(a.yx) do
       for x, v in ipairs(xx) do
         a.xy[x] = a.xy[x] or {}
-        a.xy[x][y] = (v - vmin) / vd
+        local nv = (v - vmin) / vd
+        nv = math.max(nv - blackValue, 0) / (1-blackValue)
+        nv = math.min(nv, whiteValue) / whiteValue
+        a.xy[x][y] = nv * a.intensity
       end
     end
   end
@@ -554,6 +570,7 @@ end
 function HeightBuffer:Blend(x, y, height, alpha)
   if not self:CoordsOkay(x, y) then return end
   alpha = alpha or 1
+  if alpha < 1 and self.heights[x][y] > height then alpha = alpha * 0.5 end
   local orig = 1 - alpha
   local newHeight = (self.heights[x][y] * orig) + (height * alpha)
   self.heights[x][y] = newHeight
@@ -666,7 +683,7 @@ function Renderer:EmptyFinish()
 end
 
 function Renderer:HeightInit()
-  self.totalProgress = self.totalcraterarea
+  self.totalProgress = self.totalCraterArea
 end
 
 function Renderer:HeightFrame()
@@ -683,6 +700,18 @@ function Renderer:HeightFrame()
     end
     if c.currentPixel > c.area then
       c.complete = true
+      --[[
+      -- for testing for bad seeds
+      if c.peakNoise then
+        self.xoff = self.xoff or 0
+        for x = 1, c.peakNoise.sideLength+1 do
+          for y = 1, c.peakNoise.sideLength+1 do
+            self.heightBuf:Set(x+self.xoff, y, c.peakNoise:Get(x, y))
+          end
+        end
+        self.xoff = self.xoff + c.peakNoise.sideLength + 1
+      end
+      ]]--
       table.remove(self.craters, 1)
     end
     if pixelsRendered == self.pixelsPerFrame then break end
@@ -915,8 +944,9 @@ function Crater:HeightPixel(x, y)
       if distSqPeakWobbled < self.peakRadiusSq then
         local peakRatio = 1 - (distSqPeakWobbled / self.peakRadiusSq)
         peakRatio = math.smoothstep(0, 1, peakRatio)
-        local px, py = math.floor(dx+self.peakNoise.halfSideLength), math.floor(dy+self.peakNoise.halfSideLength)
-        local peak = self.peakNoise:Get(px, py) * peakRatio
+        local px, py = math.floor(dx+self.peakNoise.halfSideLength+3), math.floor(dy+self.peakNoise.halfSideLength+3)
+        local peak = math.max(self.peakNoise:Get(px, py)-(self.peakNoise.intensity/2), 0) * peakRatio * 2
+        -- Spring.Echo(dx, dy, px, py, math.floor(peak))
         height = height + peak
       end
       if height < meteor.meltSurface then height = meteor.meltSurface end
@@ -1001,7 +1031,8 @@ end
 function Crater:GiveStartingHeight()
   if self.startingHeight then return end
   if not self.renderer.heightBuf then return end
-  self.startingHeight = self.renderer.heightBuf:GetCircle(self.x, self.y, self.radius)
+  local havg, hmin, hmax = self.renderer.heightBuf:GetCircle(self.x, self.y, self.radius)
+  self.startingHeight = havg
 end
 
 --------------------------------------
@@ -1051,7 +1082,7 @@ function TwoDimensionalNoise:Get(x, y)
   if self.xy then
     if not self.xy[x] then return 0 end
     if not self.xy[x][y] then return 0 end
-    return self.xy[x][y] * self.intensity
+    return self.xy[x][y]
   end
   if not self.yx[y] then return 0 end
   if not self.yx[y][x] then return 0 end

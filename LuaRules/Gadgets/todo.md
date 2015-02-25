@@ -1,6 +1,9 @@
+- resolve the problem of crater ejecta interactions
+	- ejecta should never lower the terrain
+	- therefore crater rim should never be lower than surrounding terrain
 - complex shape:
 	- rim terracing (use a by-distance 1D noise?)
-- attributes: breccia, crater melt, central peak, ejecta blanket
+- attributes: breccia, crater melt, central peak, ejecta blanket, breccia terrace, breccia slump
 - age craters by flattening their contours and adding a bit of perlin noise
 - speed up heightpixel
 	- replace gaussian with smoothstep?

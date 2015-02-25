@@ -132,10 +132,7 @@ function perlin2D(seed, width, height, persistence, N, amplitude)
       data[r][c] = 0
     end
   end
-  -- for i = N, 1, -1 do
   for i = 1, N do
-    -- compInterp = 2^(i-1)
-    -- compAmplitude = amplitude * persistence^(N-i)
     compInterp = 2^(N-i)
     compAmplitude = amplitude * (persistence^(i-1))
     comp = perlinComponent2D(seed+i*1000, width, height, compInterp, compAmplitude)
