@@ -11,7 +11,7 @@ function widget:GetInfo()
 end
 
 local asciis = {}
-local clocks = {}
+local timers = {}
 local meteor
 local currentFile
 local currentFilename
@@ -21,25 +21,25 @@ local renderType, renderProgress, renderTotal, renderRatio, renderBgRect, render
 local renderRatioRect = { x1 = 0.25, y1 = 0.49, x2 = 0.75, y2 = 0.51 }
 local renderBgRGB = { r = 0, g = 0, b = 0.5, a = 0.5 }
 
-local function StartClock(thing)
-	clocks[thing] = Spring.GetTimer()
+local function StartTimer(thing)
+	timers[thing] = Spring.GetTimer()
 end
 
-local function EndClock(thing)
-	if not clocks[thing] then return end
-	Spring.Echo(string.format(thing .. " in " .. math.ceil(Spring.DiffTimers(Spring.GetTimer(), clocks[thing], true)) .. "ms"))
-	clocks[thing] = nil
+local function EndTimer(thing)
+	if not timers[thing] then return end
+	Spring.Echo(string.format(thing .. " in " .. math.ceil(Spring.DiffTimers(Spring.GetTimer(), timers[thing], true)) .. "ms"))
+	timers[thing] = nil
 end
 
-local function EndClocks()
-	for thing, clock in pairs(clocks) do
+local function EndTimers()
+	for thing, clock in pairs(timers) do
  		Spring.Echo(string.format(thing .. " in " .. math.ceil(Spring.DiffTimers(Spring.GetTimer(), clock, true)) .. "ms"))
  	end
- 	clocks = {}
+ 	timers = {}
 end
 
 local function LoonyCommand(command, alreadyLoony)
-	StartClock(command)
+	StartTimer(command)
 	local msg = command
 	if not alreadyLoony then msg = "loony " .. msg end
 	Spring.SendLuaRulesMsg(msg)
@@ -119,7 +119,7 @@ local function ReceiveClearMeteors()
 end
 
 local function ReceiveCompleteCommand(command)
-	EndClock(command)
+	EndTimer(command)
 end
 
 local function ReceiveRenderStatus(rt, progress, total)
@@ -220,7 +220,7 @@ function widget:DrawScreen()
 end
 
 function widget:GameFrame(frame)
-	-- EndClocks()
+	-- EndTimers()
 end
 
 function widget:TextCommand(command)
