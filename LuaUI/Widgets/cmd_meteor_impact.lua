@@ -219,10 +219,6 @@ function widget:DrawScreen()
 	end
 end
 
-function widget:GameFrame(frame)
-	-- EndTimers()
-end
-
 function widget:TextCommand(command)
 	if (string.find(command, 'loony') == 1) then
 		LoonyCommand(command, true)

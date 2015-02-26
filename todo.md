@@ -1,0 +1,9 @@
+- scale peak noise with crater size
+- complex shape: rim terracing
+- attributes: breccia, melt, peak, ejecta, breccia slump
+- add mirroring (for every meteor added another is added in symmetry on the other side of the map). option between rotational or reflectional symmetry. mirror meteors have slightly modified properties, to make the end map look less boring.
+- add world save/load
+- change distance squared to distance?
+- still slightly confused about how overlapping crater interactions should resolve
+- optional base perlin noise
+- switch gadget to widget? not sure what's worse, indirect access to map, or to files
