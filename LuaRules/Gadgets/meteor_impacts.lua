@@ -128,17 +128,6 @@ local function splitIntoWords(s)
   return words
 end
 
-local function XZtoXY(x, z)
-  local y = (Game.mapSizeZ - z)
-  return x+1, y+1
-end
-
-local function XZtoHXHY(x, z)
-  local hx = math.floor(x / Game.squareSize) + 1
-  local hy = math.floor((Game.mapSizeZ - z) / Game.squareSize) + 1
-  return hx, hy
-end
-
 local function Gaussian(x, c)
   gaussians[x] = gaussians[x] or {}
   gaussians[x][c] = gaussians[x][c] or math.exp(  -( (x^2) / (2*(c^2)) )  )
@@ -230,7 +219,7 @@ World = class(function(a, metersPerElmo, baselevel, gravity, density)
 end)
 
 MapRuler = class(function(a, elmosPerPixel, width, height)
-  elmosPerPixel = elmosPerPixel or Game.mapSizeX / width
+  elmosPerPixel = elmosPerPixel or Game.mapSizeX / (width-1)
   width = width or math.ceil(Game.mapSizeX / elmosPerPixel)
   height = height or math.ceil(Game.mapSizeZ / elmosPerPixel)
   a.elmosPerPixel = elmosPerPixel
@@ -308,8 +297,8 @@ Crater = class(function(a, meteor, renderer)
     a.peakNoise = TwoDimensionalNoise(meteor.peakSeed, a.peakRadius * 2 * (1+meteor.distWobbleAmount) * (1+meteor.peakRadialNoise.intensity), meteor.craterPeakHeight, 0.25, 5, 1, 0.25, 1)
   end
 
-  a.width = a.xmax - a.xmin
-  a.height = a.ymax - a.ymin
+  a.width = a.xmax - a.xmin + 1
+  a.height = a.ymax - a.ymin + 1
   a.area = a.width * a.height
   a.currentPixel = 0
   -- a.ageNoise = TwoDimensionalNoise(a.width, meteor.ageRatio, a.width)
@@ -322,8 +311,6 @@ Meteor = class(function(a, world, sx, sz, diameterSpring, velocityImpact, angleI
   -- coordinates sx and sz and diameterSpring are in spring coordinates (elmos)
   a.world = world
   a.sx, a.sz = math.floor(sx), math.floor(sz)
-  a.x, a.y = XZtoXY(a.sx, a.sz)
-  a.hx, a.hy = XZtoHXHY(a.sx, a.sz)
 
   a.distWobbleAmount = MinMaxRandom(0.1, 0.2)
   a.heightWobbleAmount = MinMaxRandom(0.15, 0.35)
@@ -458,7 +445,8 @@ end)
 
 function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVelocity, minAngle, maxAngle, minDensity, maxDensity)
   number = number or 3
-  minDiameter = minDiameter or 5
+  minDiameter = minDiameter or 1
+  maxDiameter = maxDiameter or 5000
   minVelocity = minVelocity or 15
   maxVelocity = maxVelocity or 110
   minDiameter = minDiameter^0.01
@@ -516,6 +504,7 @@ function MapRuler:XYtoXZ(x, y)
   else
     local sx = math.floor((x-1) * self.elmosPerPixel)
     local sz = math.floor(Game.mapSizeZ - ((y-1) * self.elmosPerPixel))
+    -- if y == self.height then Spring.Echo(y, sz, Game.mapSizeZ, self.elmosPerPixel, y-1) end
     return sx, sz
   end
 end
@@ -570,7 +559,7 @@ end
 function HeightBuffer:Blend(x, y, height, alpha)
   if not self:CoordsOkay(x, y) then return end
   alpha = alpha or 1
-  if alpha < 1 and self.heights[x][y] > height then alpha = alpha * 0.5 end
+  if alpha < 1 and self.heights[x][y] > height then alpha = alpha * alpha end
   local orig = 1 - alpha
   local newHeight = (self.heights[x][y] * orig) + (height * alpha)
   self.heights[x][y] = newHeight
@@ -692,9 +681,14 @@ function Renderer:HeightFrame()
     local c = self.craters[1]
     c:GiveStartingHeight()
     while c.currentPixel <= c.area and pixelsRendered < self.pixelsPerFrame do
-      local x, y, height, alpha = c:OneHeightPixel()
+      local x, y, height, alpha, add = c:OneHeightPixel()
+      if y == self.mapRuler.height then Spring.Echo(x, y, height, alpha) end
       if height then
-        self.heightBuf:Blend(x, y, height+c.startingHeight, alpha)
+        -- if add then
+          -- self.heightBuf:Add(x, y, height, alpha)
+        -- else
+          self.heightBuf:Blend(x, y, height+c.startingHeight, alpha)
+        -- end
         pixelsRendered = pixelsRendered + 1
       end
     end
@@ -737,7 +731,11 @@ function Renderer:HeightSpringFrame()
       local y = self.mapRuler.height - math.floor(p / self.mapRuler.width)
       local sx, sz = self.mapRuler:XYtoXZ(x, y)
       local height = (self.heightBuf:Get(x, y) or 0) --* self.elmosPerPixel -- because the horizontal is all scaled to the heightmap
-      Spring.SetHeightMap(sx, sz, self.world.baselevel+height)
+      if sz == 0 and height ~= 0 then
+        Spring.Echo(sx, sz, height, x, y)
+      end
+      local set = Spring.SetHeightMap(sx, sz, self.world.baselevel+height)
+      if not set then Spring.Echo("bad setheightmap coordinate", sx, sz, x, y) end
     end
   end)
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
@@ -933,6 +931,7 @@ function Crater:HeightPixel(x, y)
   local rimHeight = meteor.craterRimHeight * heightWobbly
   local rimRatioPower = rimRatio ^ meteor.bowlPower
   -- Spring.Echo(meltSurface, rimHeight, meteor.craterDepth, rimHeight - meteor.craterDepth)
+  local add = false
   if distSq < self.radiusSq then
     height = 1 - rimRatioPower
     height = rimHeight - (height*meteor.craterDepth)
@@ -958,6 +957,7 @@ function Crater:HeightPixel(x, y)
       height = height - rayHeight
     end
   else
+    add = true
     height = rimHeight
     local fallDistSq = distSq - self.radiusSq
     if fallDistSq <= self.falloffSq then
@@ -980,7 +980,7 @@ function Crater:HeightPixel(x, y)
     -- if height > 0 then height = height / (1+(ageWobbly * meteor.ageRatio)) end
     -- height = math.mix(height, ((ageWobbly - 0.5) * rimHeight), meteor.ageRatio)
   -- end
-  return height, alpha
+  return height, alpha, add
   -- return self.ageNoise[y-self.ymin+1][x-self.xmin+1]*100, 1
 end
 
@@ -989,8 +989,8 @@ function Crater:OneHeightPixel()
   local x = (p % self.width) + self.xmin
   local y = math.floor(p / self.width) + self.ymin
   self.currentPixel = self.currentPixel + 1
-  local height, alpha = self:HeightPixel(x, y)
-  return x, y, height, alpha
+  local height, alpha, add = self:HeightPixel(x, y)
+  return x, y, height, alpha, add
 end
 
 function Crater:AttributePixel(x, y)
@@ -1113,32 +1113,35 @@ function gadget:RecvLuaMsg(msg, playerID)
   local words = splitIntoWords(msg)
   local where = words[1]
   if where == "loony" then
-    local uiCommand = words[2]
-    local fullUiCommand = string.sub(msg, 7)
-    if uiCommand == "meteor" then
+    local commandWord = words[2]
+    local uiCommand = string.sub(msg, 7)
+    if commandWord == "meteor" then
       myWorld:AddMeteor(words[3], words[4], words[5] * 2)
-      myWorld:RenderHeightSpring(fullUiCommand)
-    elseif uiCommand == "shower" then
+      myWorld:RenderHeightSpring(uiCommand)
+    elseif commandWord == "shower" then
       myWorld:MeteorShower(words[3], words[4], words[5], words[6], words[7], words[8], words[9])
-      myWorld:RenderHeightSpring(fullUiCommand)
-    elseif uiCommand == "clear" then
+      myWorld:RenderHeightSpring(uiCommand)
+    elseif commandWord == "clear" then
       myWorld = World(2.32, 1000)
-      myWorld:RenderHeightSpring(fullUiCommand)
-    elseif uiCommand == "blur" then
+      SendToUnsynced("ClearMeteors")
+      if not bypassSpring then
+        Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, myWorld.baselevel)
+      end
+    elseif commandWord == "blur" then
       local radius = words[3] or 1
-      myWorld.hei:Blur(radius, fullUiCommand)
-      myWorld.hei:WriteToSpring(fullUiCommand)
-    elseif uiCommand == "read" then
+      myWorld.hei:Blur(radius, uiCommand)
+      myWorld.hei:WriteToSpring(uiCommand)
+    elseif commandWord == "read" then
       myWorld.hei:Read()
-    elseif uiCommand == "heightpgm" then
-      myWorld.hei:SendPGM(fullUiCommand)
-    elseif uiCommand == "attribpgm" then
-      myWorld:RenderAttributes(8, fullUiCommand)
-    elseif uiCommand == "bypasstoggle" then
+    elseif commandWord == "heightpgm" then
+      myWorld.hei:SendPGM(uiCommand)
+    elseif commandWord == "attribpgm" then
+      myWorld:RenderAttributes(8, uiCommand)
+    elseif commandWord == "bypasstoggle" then
       bypassSpring = not bypassSpring
       Spring.Echo("bypassSpring is now", tostring(bypassSpring))
       SendToUnsynced("BypassSpring", tostring(bypassSpring))
-      myWorld:RenderHeightSpring(fullUiCommand)
+      myWorld:RenderHeightSpring(uiCommand)
     end
   end
 end
