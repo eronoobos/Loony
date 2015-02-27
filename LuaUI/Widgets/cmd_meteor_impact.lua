@@ -156,22 +156,24 @@ end
 
 function widget:KeyPress(key, mods, isRepeat)
 	if isRepeat == false then
-		if key == ascii(",") then
+		if key == ascii(".") then
 			BeginMeteor()
-		elseif key == ascii(".") then
+		elseif key == ascii("b") then
 			LoonyCommand("blur")
 		elseif key == ascii("/") then
 			LoonyCommand("clear")
-		elseif key == ascii("'") then
+		elseif key == ascii("r") then
 			LoonyCommand("read")
-		elseif key == ascii(";") then
+		elseif key == ascii("\\") then
 			LoonyCommand("bypasstoggle")
+		elseif key == ascii("m") then
+			LoonyCommand("mirrornext")
 		end
 	end
 end
 
 function widget:KeyRelease(key)
-	if key == ascii(",") then
+	if key == ascii(".") then
 		EndMeteor()
 	end
 end

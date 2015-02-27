@@ -64,6 +64,12 @@ for i, entry in pairs(AttributeDict) do
   AttributesByName[entry.name] = { index = i, rgb = aRGB, threechars = threechars}
 end
 
+local MirrorTypes = { "reflectionalx", "reflectionalz", "rotational", "none" }
+local MirrorNames = {}
+for i, name in pairs(MirrorTypes) do
+  MirrorNames[name] = i
+end
+
 ------------------------------------------------------------------------------
 
 -- local functions:
@@ -95,6 +101,11 @@ end
 
 local function RandomVariance(variance)
   return (1-variance) + (math.random() * variance * 2)
+end
+
+local function VaryWithinBounds(value, variance, minimum, maximum)
+  if not value then return nil end
+  return math.max(math.min(value*RandomVariance(variance), maximum), minimum)
 end
 
 local function AngleDXDY(dx, dy)
@@ -211,7 +222,7 @@ end
 
 -- classes: ------------------------------------------------------------------
 
-World = class(function(a, metersPerElmo, baselevel, gravity, density)
+World = class(function(a, metersPerElmo, baselevel, gravity, density, mirror)
   a.metersPerElmo = metersPerElmo or 1 -- meters per elmo for meteor simulation model only
   a.metersPerSquare = a.metersPerElmo * Game.squareSize
   Spring.Echo(a.metersPerElmo, a.metersPerSquare)
@@ -219,11 +230,13 @@ World = class(function(a, metersPerElmo, baselevel, gravity, density)
   a.gravity = gravity or (Game.gravity / 130) * 9.8
   a.density = density or (Game.mapHardness / 100) * 2500
   a.complexDiameter = 3200 / (a.gravity / 9.8)
+  a.mirror = mirror or "none"
  
-  a.hei = HeightBuffer(a, heightMapRuler)
-  a.meteors = {}
-  a.renderers = {}
-  SendToUnsynced("ClearMeteors")
+  a:Clear()
+  -- a.hei = HeightBuffer(a, heightMapRuler)
+  -- a.meteors = {}
+  -- a.renderers = {}
+  -- SendToUnsynced("ClearMeteors")
 end)
 
 MapRuler = class(function(a, elmosPerPixel, width, height)
@@ -354,11 +367,8 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
   a.distSeed = math.floor(math.random() * 1000)
   a.heightSeed = math.floor(math.random() * 1000)
   a.blastSeed = math.floor(math.random() * 1000)
-  a.heightNoise = WrapNoise(16, a.heightWobbleAmount, a.heightSeed)
-  a.blastNoise = WrapNoise(96, 0.5, a.blastSeed, 0.5, 2)
   a.rayWobbleAmount = MinMaxRandom(0.3, 0.4)
   a.raySeed = math.floor(math.random() * 1000)
-  a.rayNoise = WrapNoise(24, a.rayWobbleAmount, a.raySeed, 0.5, 3)
 
   a.complex = a.diameterSimple > world.complexDiameter * RandomVariance(0.1)
   if a.complex then
@@ -400,6 +410,13 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
     a.rayHeight = (a.craterRimHeight / 2)
     a.distWobbleAmount = MinMaxRandom(0.05, 0.15)
     a.distNoise = WrapNoise(math.max(math.ceil(a.craterRadius / 35), 8), a.distWobbleAmount, a.distSeed, 0.3, 5)
+    a.rayNoise = WrapNoise(24, a.rayWobbleAmount, a.raySeed, 0.5, 3)
+  end
+
+  a.heightNoise = WrapNoise(math.max(math.ceil(a.craterRadius / 45), 8), a.heightWobbleAmount, a.heightSeed)
+  if a.age < 10 then
+    a.blastNoise = WrapNoise(math.min(math.max(math.ceil(a.craterRadius), 32), 512), 0.5, a.blastSeed, 1, 1)
+    Spring.Echo(a.blastNoise.length)
   end
 end)
 
@@ -470,6 +487,17 @@ end)
 
 -- class methods: ------------------------------------------------------------
 
+function World:Clear()
+  self.hei = HeightBuffer(self, heightMapRuler)
+  self.meteors = {}
+  self.renderers = {}
+  SendToUnsynced("ClearMeteors")
+  SendToUnsynced("RenderStatus", "none")
+  if not bypassSpring then
+    Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.baselevel)
+  end
+end
+
 function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVelocity, minAngle, maxAngle, minDensity, maxDensity)
   number = number or 3
   minDiameter = minDiameter or 1
@@ -486,7 +514,7 @@ function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVe
   local diameterDif = maxDiameter - minDiameter
   for n = 1, number do
     -- local diameter = MinMaxRandom(minDiameter, maxDiameter)^100
-    local diameter = minDiameter + (math.max(DiceRoll(10)-0.5, 0) * diameterDif * 2)
+    local diameter = minDiameter + (math.abs(DiceRoll(30)-0.5) * diameterDif * 2)
     -- Spring.Echo(diameter)
     local velocity = MinMaxRandom(minVelocity, maxVelocity)
     local angle = MinMaxRandom(minAngle, maxAngle)
@@ -497,10 +525,26 @@ function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVe
   end
 end
 
-function World:AddMeteor(sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
-  local m = Meteor(self, sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
+function World:AddMeteor(sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age, doNotMirror)
+  local m = Meteor(self, sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age)
   table.insert(self.meteors, m)
-  SendToUnsynced("Meteor", sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
+  SendToUnsynced("Meteor", sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age)
+  if self.mirror ~= "none" and not doNotMirror then
+    local nsx, nsz
+    if self.mirror == "reflectionalx" then
+      nsx = Game.mapSizeX - sx
+      nsz = sz+0
+    elseif self.mirror == "reflectionalz" then
+      nsx = sx+0
+      nsz = Game.mapSizeZ - sz
+    elseif self.mirror == "rotational" then
+      nsx = Game.mapSizeX - sx
+      nsz = Game.mapSizeZ - sz
+    end
+    if nsx then
+      self:AddMeteor(nsx, nsz, VaryWithinBounds(diameterImpactor, 0.1, 1, 9999), VaryWithinBounds(velocityImpactKm, 0.1, 1, 120), VaryWithinBounds(angleImpact, 0.1, 1, 89), VaryWithinBounds(densityImpactor, 0.1, 1000, 10000), age, true)
+    end
+  end
 end
 
 function World:RenderHeightSpring(uiCommand)
@@ -1023,14 +1067,16 @@ function Crater:OneHeightPixel()
 end
 
 function Crater:AttributePixel(x, y)
-  if x < self.xminBlast or x > self.xmaxBlast or y < self.yminBlast or y > self.ymaxBlast then return 0 end
   local meteor = self.meteor
+  if meteor.age >= 10 and (x < self.xmin or x > self.xmax or y < self.ymin or y > self.ymax) then return 0 end 
+  if x < self.xminBlast or x > self.xmaxBlast or y < self.yminBlast or y > self.ymaxBlast then return 0 end
   local dx, dy = x-self.x, y-self.y
   local angle = AngleDXDY(dx, dy)
   local distWobbly = meteor.distNoise:Radial(angle) + 1
   local realDistSq = self:GetDistanceSq(x, y)
   -- local realRimRatio = realDistSq / radiusSq
   local distSq = realDistSq * distWobbly
+  if meteor.age >= 10 and distSq > self.totalradiusSq then return 0 end
   if distSq > self.blastRadiusSq then return 0 end
   local rimRatio = distSq / self.radiusSq
   local heightWobbly = (meteor.heightNoise:Radial(angle) * rimRatio) + 1
@@ -1074,50 +1120,15 @@ function Crater:AttributePixel(x, y)
       -- height = diameterTransientFourth / (112 * (fallDistSq^1.5))
       if math.random() < alpha then return 3 end
     end
-    local blastWobbly = meteor.blastNoise:Radial(angle) + 0.5
-    local blastRadiusSqWobbled = self.blastRadiusSq * blastWobbly
-    local blastRatio = (distSq / blastRadiusSqWobbled)
-    if math.random() * math.max(1-(meteor.ageRatio*4), 0) > blastRatio then return 5 end
+    if meteor.age < 10 then
+      local blastWobbly = meteor.blastNoise:Radial(angle) + 0.5
+      local blastRadiusSqWobbled = self.blastRadiusSq * blastWobbly
+      local blastRatio = (distSq / blastRadiusSqWobbled)
+      if math.random() * math.max(1-(meteor.ageRatio*10), 0) > blastRatio then return 5 end
+    end
   end
   return 0
 end
-
---[[
-function Crater:AttributePixel(x, y)
-  if x < self.xmin or x > self.xmax or y < self.ymin or y > self.ymax then return 0 end
-  local dx, dy = x-self.x, y-self.y
-  local realDistSq = self:GetDistanceSq(x, y)
-  if realDistSq > self.blastRadiusSq then return 0 end
-  local meteor = self.meteor
-  local angle = AngleDXDY(dx, dy)
-  local distWobbly = meteor.distNoise:Radial(angle) + 1
-  local rayWobbly = meteor.rayNoise:Radial(angle) + 1
-  local blastWobbly = meteor.blastNoise:Radial(angle) + 0.33
-  local distSq = realDistSq * distWobbly
-  local rimRatio = distSq / self.radiusSq
-  -- local realRimRatio = realDistSq / radiusSq
-  local rayWidth = meteor.rayWidth * rayWobbly
-  local rayHeight = (angle % rayWidth) * rimRatio
-  local rayCutoff = rayWidth * 0.5
-  local blastRadiusSqWobbled = self.blastRadiusSq * blastWobbly
-  -- local rayHeight = (angle % rayWidth) * self.rayHeight * distWobbly * rimRatio
-  if distSq < self.brecciaRadiusSq then
-    if rayHeight > rayCutoff then return 6 end
-    return 1
-  elseif distSq < self.radiusSq then
-    if rayHeight > rayCutoff then return 6 end
-    return 2
-  elseif distSq < self.totalradiusSq then
-    return 3
-  elseif distSq < blastRadiusSqWobbled then
-    local blastRatio = distSq / blastRadiusSqWobbled
-    local blastRayWidth = rayWidth * (1 - blastRatio)
-    local blastRayRatio = (angle % blastRayWidth) / blastRayWidth
-    if math.random() < angle % blastRayWidth and math.random() > blastRatio then return 5 end
-  end
-  return 0
-end
-]]--
 
 function Crater:GiveStartingHeight()
   if self.startingHeight then return end
@@ -1191,9 +1202,7 @@ function gadget:Initialize()
   heightMapRuler = heightMapRuler or MapRuler(nil, (Game.mapSizeX / Game.squareSize) + 1, (Game.mapSizeZ / Game.squareSize) + 1)
   -- myWorld = World(2.32, 1000)
   myWorld = World(3, 1000)
-  if not bypassSpring then
-    Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, myWorld.baselevel)
-  end
+  -- if not bypassSpring then Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, myWorld.baselevel) end
 end
 
 function gadget:Shutdown()
@@ -1214,11 +1223,7 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld:MeteorShower(words[3], words[4], words[5], words[6], words[7], words[8], words[9])
       myWorld:RenderHeightSpring(uiCommand)
     elseif commandWord == "clear" then
-      myWorld = World(2.32, 1000)
-      SendToUnsynced("ClearMeteors")
-      if not bypassSpring then
-        Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, myWorld.baselevel)
-      end
+      myWorld:Clear()
     elseif commandWord == "blur" then
       local radius = words[3] or 1
       myWorld.hei:Blur(radius, uiCommand)
@@ -1234,6 +1239,14 @@ function gadget:RecvLuaMsg(msg, playerID)
       Spring.Echo("bypassSpring is now", tostring(bypassSpring))
       SendToUnsynced("BypassSpring", tostring(bypassSpring))
       myWorld:RenderHeightSpring(uiCommand)
+    elseif commandWord == "mirror" then
+      myWorld.mirror = words[3]
+      Spring.Echo("mirror: " .. myWorld.mirror)
+    elseif commandWord == "mirrornext" then
+      local mt = MirrorNames[myWorld.mirror]+1
+      if mt == #MirrorTypes+1 then mt = 1 end
+      myWorld.mirror = MirrorTypes[mt]
+      Spring.Echo("mirror: " .. myWorld.mirror)
     end
   end
 end
