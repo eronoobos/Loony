@@ -85,17 +85,18 @@ local function EndMeteor()
 	end
 end
 
-local function ReceiveBeginPGM(name)
+local function ReceiveBeginFile(name, ext)
 	name = name or ""
-	currentFilename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. ".pgm")
+	ext = ext or "txt"
+	currentFilename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. "." .. ext)
 	currentFile = assert(io.open(currentFilename,'wb'), "Unable to save to "..currentFilename)
 end
 
-local function ReceivePiecePGM(dataString)
+local function ReceivePieceFile(dataString)
 	currentFile:write(dataString)
 end
 
-local function ReceiveEndPGM()
+local function ReceiveEndFile()
 	currentFile:close()
 	Spring.Echo("pgm data written to " .. currentFilename)
 end
@@ -143,9 +144,9 @@ local function ReceiveRenderStatus(rt, progress, total)
 end
 
 function widget:Initialize()
-	widgetHandler:RegisterGlobal("ReceiveBeginPGM", ReceiveBeginPGM)
-	widgetHandler:RegisterGlobal("ReceivePiecePGM", ReceivePiecePGM)
-	widgetHandler:RegisterGlobal("ReceiveEndPGM", ReceiveEndPGM)
+	widgetHandler:RegisterGlobal("ReceiveBeginFile", ReceiveBeginFile)
+	widgetHandler:RegisterGlobal("ReceivePieceFile", ReceivePieceFile)
+	widgetHandler:RegisterGlobal("ReceiveEndFile", ReceiveEndFile)
 	widgetHandler:RegisterGlobal("ReceiveMeteor", ReceiveMeteor)
 	widgetHandler:RegisterGlobal("ReceiveBypassSpring", ReceiveBypassSpring)
 	widgetHandler:RegisterGlobal("ReceiveClearMeteors", ReceiveClearMeteors)
