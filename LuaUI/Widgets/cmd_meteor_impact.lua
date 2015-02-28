@@ -39,9 +39,11 @@ local function EndTimers()
 end
 
 local function LoonyCommand(command, alreadyLoony)
-	StartTimer(command)
 	local msg = command
 	if not alreadyLoony then msg = "loony " .. msg end
+	local timerCmd = command
+	if alreadyLoony then timerCmd = timerCmd:sub(7) end
+	StartTimer(timerCmd)
 	Spring.SendLuaGaiaMsg(msg)
 end
 
@@ -85,11 +87,12 @@ local function EndMeteor()
 	end
 end
 
-local function ReceiveBeginFile(name, ext)
+local function ReceiveBeginFile(name, ext, mode)
 	name = name or ""
 	ext = ext or "txt"
+	mode = mode or "wb"
 	currentFilename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. "." .. ext)
-	currentFile = assert(io.open(currentFilename,'wb'), "Unable to save to "..currentFilename)
+	currentFile = assert(io.open(currentFilename,mode), "Unable to save to "..currentFilename)
 end
 
 local function ReceivePieceFile(dataString)
@@ -99,6 +102,21 @@ end
 local function ReceiveEndFile()
 	currentFile:close()
 	Spring.Echo(currentFilename .. " written")
+end
+
+local function ReceiveReadFile(name, ext)
+	name = name or ""
+	ext = ext or "txt"
+	local filename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. "." .. ext)
+	Spring.Echo("reading from " .. filename)
+	local file = assert(io.open(filename,"r"), "Unable to read from "..filename)
+	while true do
+		local line = file:read()
+		if not line then break end
+    -- for line in io.lines() do
+      Spring.SendLuaGaiaMsg("loony fileline " .. line)
+    end
+    Spring.SendLuaGaiaMsg("loony fileend")
 end
 
 local function ReceiveMeteor(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
@@ -147,6 +165,7 @@ function widget:Initialize()
 	widgetHandler:RegisterGlobal("ReceiveBeginFile", ReceiveBeginFile)
 	widgetHandler:RegisterGlobal("ReceivePieceFile", ReceivePieceFile)
 	widgetHandler:RegisterGlobal("ReceiveEndFile", ReceiveEndFile)
+	widgetHandler:RegisterGlobal("ReceiveReadFile", ReceiveReadFile)
 	widgetHandler:RegisterGlobal("ReceiveMeteor", ReceiveMeteor)
 	widgetHandler:RegisterGlobal("ReceiveBypassSpring", ReceiveBypassSpring)
 	widgetHandler:RegisterGlobal("ReceiveClearMeteors", ReceiveClearMeteors)
@@ -166,14 +185,20 @@ function widget:KeyPress(key, mods, isRepeat)
 			LoonyCommand("read")
 		elseif key == ascii("\\") then
 			LoonyCommand("bypasstoggle")
-		elseif key == ascii("m") then
+		elseif key == ascii("=") then
 			LoonyCommand("mirrornext")
 		elseif key == ascii("a") then
-			LoonyCommand("attribpgm")
+			LoonyCommand("attributes")
 		elseif key == ascii("h") then
-			LoonyCommand("heightpgm")
-		elseif key == ascii("u") then
+			LoonyCommand("height")
+		elseif key == ascii("h") then
+			LoonyCommand("metal")
+		elseif key == ascii("m") then
 			LoonyCommand("underlyingmaretoggle")
+		elseif key == ascii("s") then
+			LoonyCommand("save")
+		elseif key == ascii("l") then
+			LoonyCommand("load")
 		end
 	end
 end

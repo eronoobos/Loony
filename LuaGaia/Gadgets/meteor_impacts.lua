@@ -31,16 +31,25 @@ local tRemove = table.remove
 local spSetHeightMapFunc = Spring.SetHeightMapFunc
 local spAdjustHeightMap = Spring.AdjustHeightMap
 
-local myWorld
-local bypassSpring = false
+-- config:
+
+local bypassSpring = true
 local yesMare = false
-local heightMapRuler
+local fileMaxPacketLength = 1024
+
+-- local variables:
+
+local myWorld
+local heightMapRuler, metalMapRuler
 
 local diffDistances = {}
 local diffDistancesSq = {}
 local sqrts = {}
 local gaussians = {}
 local angles = {}
+local fileBuffer = ""
+local readBuffer = ""
+local readEndFunc
 
 ------------------------------------------------------------------------------
 
@@ -72,7 +81,7 @@ for i, name in pairs(MirrorTypes) do
 end
 
 -- for metal spot writing
-local pixelCoords = {
+local metalPixelCoords = {
   [1] = { 0, 0 },
   [2] = { 0, 1 },
   [3] = { 0, -1 },
@@ -87,6 +96,24 @@ local pixelCoords = {
   [12] = { 0, 2 },
   [13] = { 0, -2 },
 }
+
+local WorldSaveBlackList = {
+  "world",
+  "values",
+  "outValues",
+  "valuesByAngle",
+  "renderers",
+  "heightBuf",
+}
+
+local WSBL = {}
+for i, v in pairs(WorldSaveBlackList) do
+  WSBL[v] = 1
+end
+
+local function OnWorldSaveBlackList(str)
+  return WSBL[str]
+end
 
 ------------------------------------------------------------------------------
 
@@ -106,6 +133,70 @@ end
 
 local function uint8(n)
   return string.char( n%256 )
+end
+
+local function ReadFile(name, ext, endFunc)
+  readBuffer = ""
+  readEndFunc = endFunc
+  SendToUnsynced("ReadFile", name, ext)
+end
+
+local function ReadLine(line)
+  readBuffer = readBuffer .. line .. "\n"
+end
+
+local function ReadEnd()
+  -- Spring.Echo(readBuffer)
+  readEndFunc(readBuffer)
+  readBuffer = ""
+end
+
+local function OpenFile(name, ext, mode)
+  fileBuffer = ""
+  SendToUnsynced("BeginFile", name, ext, mode)
+end
+
+local function WriteFile(...)
+  local send = ""
+  for i, str in ipairs({...}) do
+    send = send .. str
+  end
+  fileBuffer = fileBuffer .. send
+  if fileBuffer:len() >= fileMaxPacketLength then
+    SendToUnsynced("PieceFile", fileBuffer)
+    fileBuffer = ""
+  end
+end
+
+local function CloseFile()
+  if fileBuffer:len() > 0 then SendToUnsynced("PieceFile", fileBuffer) end
+  SendToUnsynced("EndFile")
+  fileBuffer = ""
+end
+
+local function serialize(o)
+  if type(o) == "number" then
+    WriteFile(o)
+  elseif type(o) == "boolean" then
+    WriteFile(tostring(o))
+  elseif type(o) == "string" then
+    WriteFile(string.format("%q", o))
+  elseif type(o) == "table" then
+    WriteFile("{")
+    for k,v in pairs(o) do
+      if not (type(k) == "string" and OnWorldSaveBlackList(k)) then
+        local kStr = k
+        if type(k) == "number" then kStr = "[" .. k .. "]" end
+        WriteFile("\n  ", kStr, " = ")
+        serialize(v)
+        WriteFile(",")
+      end
+    end
+    WriteFile("}")
+  else
+    -- Spring.Echo("cannot serialize a " .. type(o))
+    WriteFile("\"" .. type(o) .. "\"")
+  end
 end
 
 local function sqrt(number)
@@ -198,6 +289,14 @@ local function ClearMetalSquare(x, z, size)
   end
 end
 
+local function ClearMetalMap()
+  for x = 0, Game.mapSizeX/16 do
+    for z = 0, Game.mapSizeZ/16 do
+      Spring.SetMetalAmount(x, z, 0)
+    end
+  end
+end
+
 local function WriteMetalSpot(spot)
     local metal = spot.metal
     local pixels = 5
@@ -211,9 +310,8 @@ local function WriteMetalSpot(spot)
     local mAmount = (1000 / pixels) * metal
     local x, z = math.ceil(spot.x/16)-1, math.ceil(spot.z/16)-1
     if(x == nil or z == nil) then Spring.Echo("FATAL ERROR: x or y was nil for index " .. i) end
-    ClearMetalSquare(x, z, 8)
     for p = 1, pixels do
-      Spring.SetMetalAmount(x + pixelCoords[p][1], z + pixelCoords[p][2], mAmount)
+      Spring.SetMetalAmount(x + metalPixelCoords[p][1], z + metalPixelCoords[p][2], mAmount)
     end
 end
 
@@ -336,10 +434,11 @@ Renderer = class(function(a, world, mapRuler, pixelsPerFrame, renderType, uiComm
   a.pixelsRendered = 0
   a.pixelsToRenderCount = mapRuler.width * mapRuler.height
   a.totalPixels = a.pixelsToRenderCount+0
+  a.PreinitFunc = a[a.renderType .. "Preinit"] or a.EmptyPreinit
   a.InitFunc = a[a.renderType .. "Init"] or a.EmptyInit
   a.FrameFunc = a[a.renderType .. "Frame"] -- if there's no framefunc what's the point
   a.FinishFunc = a[a.renderType .. "Finish"] or a.EmptyFinish
-  a:Initialize()
+  a:Preinitialize()
 end)
 
 -- Crater actually gets rendered. scales horizontal distances to the frame being rendered
@@ -385,10 +484,11 @@ end)
 Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age)
   -- coordinates sx and sz are in spring coordinates (elmos)
   a.world = world
+  if not sx then return end
   a.sx, a.sz = math.floor(sx), math.floor(sz)
 
   a.diameterImpactor = diameterImpactor or 10
-  Spring.Echo(math.floor(a.diameterImpactor) .. " meter object")
+  -- Spring.Echo(math.floor(a.diameterImpactor) .. " meter object")
   a.velocityImpactKm = velocityImpactKm or 30
   a.angleImpact = angleImpact or 45
   a.densityImpactor = densityImpactor or 8000
@@ -471,11 +571,12 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
   a.heightNoise = WrapNoise(math.max(math.ceil(a.craterRadius / 45), 8), a.heightWobbleAmount, a.heightSeed)
   if a.age < 10 then
     a.blastNoise = WrapNoise(math.min(math.max(math.ceil(a.craterRadius), 32), 512), 0.5, a.blastSeed, 1, 1)
-    Spring.Echo(a.blastNoise.length)
+    -- Spring.Echo(a.blastNoise.length)
   end
 end)
 
 WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude)
+  a.noiseType = "Wrap"
   a.values = {}
   a.outValues = {}
   a.absMaxValue = 0
@@ -483,10 +584,14 @@ WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude
   a.length = length
   a.intensity = intensity or 1
   seed = seed or math.floor(math.random()*length*1000)
+  a.seed = seed
   a.halfLength = length / 2
   persistence = persistence or 0.25
   N = N or 6
   amplitude = amplitude or 1
+  a.persistance = persistance
+  a.N = N
+  a.amplitude = amplitude
   local radius = math.ceil(length / pi)
   local diameter = radius * 2
   local yx = perlin2D( seed, diameter+1, diameter+1, persistence, N, amplitude )
@@ -508,13 +613,24 @@ WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude
 end)
 
 TwoDimensionalNoise = class(function(a, seed, sideLength, intensity, persistence, N, amplitude, blackValue, whiteValue, doNotNormalize)
+  a.noiseType = "TwoDimensional"
   a.sideLength = math.ceil(sideLength)
   a.halfSideLength = math.floor(a.sideLength / 2)
   a.intensity = intensity or 1
+  persistence = persistence or 0.25
+  N = N or 5
+  amplitude = amplitude or 1
   seed = seed or math.floor(math.random()*sideLength*1000)
   a.yx = perlin2D( seed, sideLength+1, sideLength+1, persistence, N, amplitude )
   blackValue = blackValue or 0
   whiteValue = whiteValue or 0
+  a.seed = seed
+  a.persistence = persistence
+  a.N = N
+  a.amplitude = amplitude
+  a.blackValue = blackValue
+  a.whiteValue = whiteValue
+  a.doNotNormalize = doNotNormalize
   if not doNotNormalize then
     local vmin, vmax = 0, 0
     for y, xx in ipairs(a.yx) do
@@ -543,7 +659,7 @@ end)
 -- class methods: ------------------------------------------------------------
 
 function World:Clear()
-  self.hei = HeightBuffer(self, heightMapRuler)
+  self.heightBuf = HeightBuffer(self, heightMapRuler)
   self.meteors = {}
   self.renderers = {}
   SendToUnsynced("ClearMeteors")
@@ -551,6 +667,37 @@ function World:Clear()
   if not bypassSpring then
     Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.baselevel)
   end
+end
+
+function World:Save(name)
+  name = name or ""
+  OpenFile("world"..name, "lua", "w")
+  WriteFile("return ")
+  serialize(self)
+  CloseFile()
+end
+
+function World:Load(luaStr)
+  local loadWorld = loadstring(luaStr)
+  local newWorld = loadWorld()
+  for k, v in pairs(newWorld) do
+    self[k] = v
+  end
+  SendToUnsynced("ClearMeteors")
+  for i, m in pairs(self.meteors) do
+    local newm = Meteor(self)
+    for k, v in pairs(m) do
+      if k ~= "world" then
+        newm[k] = v
+      end
+    end
+    m = newm
+    m:BuildNoise()
+    self.meteors[i] = m
+    SendToUnsynced("Meteor", m.sx, m.sz, m.diameterImpactor, m.velocityImpactKm, m.angleImpact, m.densityImpactor, m.age)
+  end
+  self.heightBuf.changesPending = true
+  Spring.Echo("world loaded with " .. #self.meteors .. " meteors")
 end
 
 function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVelocity, minAngle, maxAngle, minDensity, maxDensity, underlyingMare)
@@ -603,26 +750,26 @@ function World:AddMeteor(sx, sz, diameterImpactor, velocityImpactKm, angleImpact
       self:AddMeteor(nsx, nsz, VaryWithinBounds(diameterImpactor, 0.1, 1, 9999), VaryWithinBounds(velocityImpactKm, 0.1, 1, 120), VaryWithinBounds(angleImpact, 0.1, 1, 89), VaryWithinBounds(densityImpactor, 0.1, 1000, 10000), age, true)
     end
   end
-  self.hei.changesPending = true
+  self.heightBuf.changesPending = true
 end
 
 function World:RenderHeightSpring(uiCommand)
   if bypassSpring then return end
-  if self.hei.changesPending then
-    self.hei:Clear()
-    local renderer = Renderer(self, heightMapRuler, 4000, "Height", uiCommand, self.hei)
+  if self.heightBuf.changesPending then
+    self.heightBuf:Clear()
+    local renderer = Renderer(self, heightMapRuler, 4000, "Height", uiCommand, self.heightBuf)
     table.insert(self.renderers, renderer)
   end
-  table.insert(self.renderers, Renderer(self, heightMapRuler, 6000, "HeightSpring", uiCommand, self.hei, true))
+  table.insert(self.renderers, Renderer(self, heightMapRuler, 6000, "HeightSpring", uiCommand, self.heightBuf, true))
 end
 
-function World:RenderAttributes(elmosPerPixel, uiCommand)
+function World:RenderAttributes(uiCommand)
   local renderer = Renderer(self, heightMapRuler, 8000, "Attributes", uiCommand)
   table.insert(self.renderers, renderer)
 end
 
 function World:RenderMetal(uiCommand)
-  local renderer = Renderer(self, metalMapRuler, 8000, "Metal", uiCommand, nil, true)
+  local renderer = Renderer(self, metalMapRuler, 16000, "Metal", uiCommand, nil, true)
   table.insert(self.renderers, renderer)
 end
 
@@ -791,12 +938,19 @@ end
 
 --------------------------------------
 
+function Renderer:Preinitialize()
+  self:PreinitFunc()
+  self.preInitialized = true
+end
+
 function Renderer:Initialize()
   self.totalProgress = self.totalPixels
   self:InitFunc()
+  self.initialized = true
 end
 
 function Renderer:Frame()
+  if not self.initialized then self:Initialize() end
   local progress = self:FrameFunc()
   if progress then
     self.progress = (self.progress or 0) + progress
@@ -819,13 +973,17 @@ function Renderer:Finish()
   self.complete = true
 end
 
+function Renderer:EmptyPreinit()
+  return
+end
+
 function Renderer:EmptyInit()
-  Spring.Echo("emptyinit")
+  -- Spring.Echo("emptyinit")
   return
 end
 
 function Renderer:EmptyFinish()
-  Spring.Echo("emptyfinish")
+  -- Spring.Echo("emptyfinish")
   return
 end
 
@@ -890,16 +1048,14 @@ function Renderer:HeightSpringFinish()
 end
 
 function Renderer:HeightImageInit()
-  SendToUnsynced("BeginFile", "height", "pgm")
-  SendToUnsynced("PieceFile", "P5 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " " .. 65535 .. " ")
+  OpenFile("height", "pgm")
+  WriteFile("P5 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " " .. 65535 .. " ")
 end
 
 function Renderer:HeightImageFrame()
   local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
-  local bytes = 0
-  local KB = ""
   local heightBuf = self.heightBuf
   local heightDif = (heightBuf.maxHeight - heightBuf.minHeight)
   for p = pMin, pMax do
@@ -908,30 +1064,21 @@ function Renderer:HeightImageFrame()
     local pixelHeight = heightBuf:Get(x, y) or self.world.baselevel
     local pixelColor = math.floor(((pixelHeight - heightBuf.minHeight) / heightDif) * 65535)
     local twochars = uint16big(pixelColor)
-    KB = KB .. twochars
-    bytes = bytes + 2
-    if bytes > 1023 then
-      SendToUnsynced("PieceFile", KB)
-      bytes = 0
-      KB = ""
-    end
-  end
-  if bytes > 0 then
-    SendToUnsynced("PieceFile", KB)
+    WriteFile(twochars)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
   return pixelsThisFrame + 1
 end
 
 function Renderer:HeightImageFinish()
-  SendToUnsynced("EndFile")
+  CloseFile()
   Spring.Echo("height File sent")
-  SendToUnsynced("BeginFile", "heightrange", "txt")
-  SendToUnsynced("PieceFile",
+  OpenFile("heightrange", "txt", "w")
+  WriteFile(
     "min: " .. self.heightBuf.minHeight .. "\n\r" ..
     "max: " .. self.heightBuf.maxHeight .. "\n\r" ..
     "range: " .. (self.heightBuf.maxHeight - self.heightBuf.minHeight))
-  SendToUnsynced("EndFile")
+  CloseFile()
 end
 
 function Renderer:HeightBlurInit()
@@ -1005,16 +1152,14 @@ function Renderer:HeightBlurFinish()
 end
 
 function Renderer:AttributesInit()
-  SendToUnsynced("BeginFile", "attrib", "pgm")
-  SendToUnsynced("PieceFile", "P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
+  OpenFile("attrib", "pbm")
+  WriteFile("P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
 end
 
 function Renderer:AttributesFrame()
   local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
-  local bytes = 0
-  local KB = ""
   for p = pMin, pMax do
     local x = (p % self.mapRuler.width) + 1
     local y = self.mapRuler.height - math.floor(p / self.mapRuler.width) -- pgm is backwards y?
@@ -1026,27 +1171,18 @@ function Renderer:AttributesFrame()
     end
     -- local aRGB = {math.floor((x / self.world.renderWidth) * 255), math.floor((y / self.world.renderHeight) * 255), math.floor((p / self.world.totalPixels) * 255)}
     local threechars = AttributeDict[attribute].threechars
-    KB = KB .. threechars
-    bytes = bytes + 3
-    if bytes > 1023 then
-      SendToUnsynced("PieceFile", KB)
-      bytes = 0
-      KB = ""
-    end
-  end
-  if bytes > 0 then
-    SendToUnsynced("PieceFile", KB)
+    WriteFile(threechars)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
   return pixelsThisFrame + 1
 end
 
 function Renderer:AttributesFinish()
-  SendToUnsynced("EndFile")
+  CloseFile()
   Spring.Echo("attribute File sent")
 end
 
-function Renderer:MetalInit()
+function Renderer:MetalPreinit()
   self.metalSpots = {}
   for i, meteor in pairs(self.world.meteors) do
     if meteor.metal then
@@ -1055,17 +1191,21 @@ function Renderer:MetalInit()
     end
   end
   Spring.Echo(#self.metalSpots .. " metal spots")
-  SendToUnsynced("BeginFile", "metal", "lua", "w")
-  SendToUnsynced("PieceFile", "return {\n\tspots = {\n")
+end
+
+function Renderer:MetalInit()
+  OpenFile("metal", "lua", "w")
+  WriteFile("return {\n\tspots = {\n")
+  ClearMetalMap()
   for i, spot in pairs(self.metalSpots) do
-    SendToUnsynced("PieceFile", "\t\t{x = " .. spot.x .. ", z = " .. spot.z .. ", metal = " .. spot.metal .. "},\n")
+    WriteFile("\t\t{x = " .. spot.x .. ", z = " .. spot.z .. ", metal = " .. spot.metal .. "},\n")
     WriteMetalSpot(spot)
   end
-  SendToUnsynced("PieceFile", "\t}\n}")
-  SendToUnsynced("EndFile")
+  WriteFile("\t}\n}")
+  CloseFile()
   Spring.Echo("wrote metal to map and config lua")
-  SendToUnsynced("BeginFile", "metal", "pgm")
-  SendToUnsynced("PieceFile", "P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
+  OpenFile("metal", "pbm")
+  WriteFile("P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
   self.zeroTwoChars = string.char(0) .. string.char(0)
   self.blackThreeChars = string.char(0) .. string.char(0) .. string.char(0)
 end
@@ -1074,8 +1214,6 @@ function Renderer:MetalFrame()
   local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
-  local bytes = 0
-  local KB = ""
   for p = pMin, pMax do
     local x = (p % self.mapRuler.width) + 1
     local y = self.mapRuler.height - math.floor(p / self.mapRuler.width) -- pgm is backwards y?
@@ -1088,23 +1226,14 @@ function Renderer:MetalFrame()
       -- if i knew how to get the map's maxmetal, i would
       threechars = string.char(mAmount) .. self.zeroTwoChars
     end
-    KB = KB .. threechars
-    bytes = bytes + 3
-    if bytes > 1023 then
-      SendToUnsynced("PieceFile", KB)
-      bytes = 0
-      KB = ""
-    end
-  end
-  if bytes > 0 then
-    SendToUnsynced("PieceFile", KB)
+    WriteFile(threechars)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
   return pixelsThisFrame + 1
 end
 
 function Renderer:MetalFinish()
-  SendToUnsynced("EndFile")
+  CloseFile()
   Spring.Echo("metal File sent")
 end
 
@@ -1276,6 +1405,25 @@ end
 
 --------------------------------------
 
+function Meteor:BuildNoise()
+  for k, v in pairs(self) do
+    if type(k) == "string" and string.sub(k, -5) == "Noise" then
+      if v.noiseType == "Wrap" then
+        v = WrapNoise(v.length, v.intensity, v.seed, v.persistence, v.N, v.amplitude)
+      elseif v.noiseType == "TwoDimesnional" then
+        v = TwoDimensionalNoise(v.seed, v.sideLength, v.intensity, v.persistence, v.N, v.amplitude, v.blackValue, v.whiteValue, v.doNotNormalize)
+      end
+      self[k] = v
+    end
+  end
+end
+
+--------------------------------------
+
+function WrapNoise:Regenerate()
+  self = WrapNoise(self.length, self.intensity, self.seed, self.persistence, self.N, self.amplitude)
+end
+
 function WrapNoise:Smooth(n)
   local n1 = math.floor(n)
   local n2 = math.ceil(n)
@@ -1316,6 +1464,10 @@ end
 
 --------------------------------------
 
+function TwoDimensionalNoise:Regenerate()
+  self = TwoDimensionalNoise(self.seed, self.sideLength, self.intensity, self.persistence, self.N, self.amplitude, self.blackValue, self.whiteValue, self.doNotNormalize)
+end
+
 function TwoDimensionalNoise:Get(x, y)
   x, y = math.floor(x), math.floor(y)
   if self.xy then
@@ -1338,9 +1490,9 @@ function gadget:Initialize()
   SendToUnsynced("ClearMeteors")
   heightMapRuler = MapRuler(nil, (Game.mapSizeX / Game.squareSize) + 1, (Game.mapSizeZ / Game.squareSize) + 1)
   metalMapRuler = MapRuler(16, (Game.mapSizeX / 16), (Game.mapSizeZ / 16))
-  -- myWorld = World(2.32, 1000)
-  myWorld = World(3, 1000)
-  -- if not bypassSpring then Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, myWorld.baselevel) end
+  myWorld = World(2.32, 1000)
+  SendToUnsynced("BypassSpring", tostring(bypassSpring))
+  -- myWorld = World(3, 1000)
 end
 
 function gadget:Shutdown()
@@ -1364,14 +1516,14 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld:Clear()
     elseif commandWord == "blur" then
       local radius = words[3] or 1
-      myWorld.hei:Blur(radius, uiCommand)
-      myWorld.hei:WriteToSpring(uiCommand)
+      myWorld.heightBuf:Blur(radius, uiCommand)
+      myWorld.heightBuf:WriteToSpring(uiCommand)
     elseif commandWord == "read" then
-      myWorld.hei:Read()
-    elseif commandWord == "heightpgm" then
-      myWorld.hei:SendFile(uiCommand)
-    elseif commandWord == "attribpgm" then
-      myWorld:RenderAttributes(8, uiCommand)
+      myWorld.heightBuf:Read()
+    elseif commandWord == "height" then
+      myWorld.heightBuf:SendFile(uiCommand)
+    elseif commandWord == "attributes" then
+      myWorld:RenderAttributes(uiCommand)
     elseif commandWord == "metal" then
       myWorld:RenderMetal(uiCommand)
     elseif commandWord == "bypasstoggle" then
@@ -1390,6 +1542,18 @@ function gadget:RecvLuaMsg(msg, playerID)
       if mt == #MirrorTypes+1 then mt = 1 end
       myWorld.mirror = MirrorTypes[mt]
       Spring.Echo("mirror: " .. myWorld.mirror)
+    elseif commandWord == "save" then
+      myWorld:Save(words[3])
+    elseif commandWord == "load" then
+      ReadFile("world" .. (words[3] or ""), "lua", function(str) myWorld:Load(str) end)
+    elseif commandWord == "fileline" then
+      ReadLine(uiCommand:sub(10))
+    elseif commandWord == "fileend" then
+      ReadEnd()
+    elseif commandWord == "renderall" then
+      myWorld:RenderMetal()
+      myWorld:RenderAttributes()
+      myWorld.heightBuf:SendFile(uiCommand)
     end
   end
 end
@@ -1415,12 +1579,16 @@ local function PieceFileToLuaUI(_, dataString)
   Script.LuaUI.ReceivePieceFile(dataString)
 end
 
-local function BeginFileToLuaUI(_, name, ext)
-  Script.LuaUI.ReceiveBeginFile(name, ext)
+local function BeginFileToLuaUI(_, name, ext, mode)
+  Script.LuaUI.ReceiveBeginFile(name, ext, mode)
 end
 
 local function EndFileToLuaUI(_)
   Script.LuaUI.ReceiveEndFile()
+end
+
+local function ReadFileToLuaUI(_, name, ext)
+  Script.LuaUI.ReceiveReadFile(name, ext)
 end
 
 local function MeteorToLuaUI(_, sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
@@ -1447,6 +1615,7 @@ function gadget:Initialize()
   gadgetHandler:AddSyncAction('PieceFile', PieceFileToLuaUI)
   gadgetHandler:AddSyncAction('BeginFile', BeginFileToLuaUI)
   gadgetHandler:AddSyncAction('EndFile', EndFileToLuaUI)
+  gadgetHandler:AddSyncAction('ReadFile', ReadFileToLuaUI)
   gadgetHandler:AddSyncAction('Meteor', MeteorToLuaUI)
   gadgetHandler:AddSyncAction('BypassSpring', BypassSpringToLuaUI)
   gadgetHandler:AddSyncAction('ClearMeteors', ClearMeteorsToLuaUI)
