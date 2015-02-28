@@ -1,7 +1,8 @@
 - scale peak noise with crater size
+- add geothermals
 - complex shape: rim terracing
-- add mirroring (for every meteor added another is added in symmetry on the other side of the map). option between rotational or reflectional symmetry. mirror meteors have slightly modified properties, to make the end map look less boring.
 - add world save/load
+- attribute interactions: the ejecta & breccia should be made of underlying material, so if an impact happens in the middle of a giant melt for instance, it doesn't weirdly make itself lighter than its surroundings. that would require an attribute map stored in memory like the height map.
 - change distance squared to distance?
 - still slightly confused about how overlapping crater interactions should resolve
 - optional base perlin noise

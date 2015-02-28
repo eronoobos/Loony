@@ -42,7 +42,7 @@ local function LoonyCommand(command, alreadyLoony)
 	StartTimer(command)
 	local msg = command
 	if not alreadyLoony then msg = "loony " .. msg end
-	Spring.SendLuaRulesMsg(msg)
+	Spring.SendLuaGaiaMsg(msg)
 end
 
 local function ascii(char)
@@ -98,7 +98,7 @@ end
 
 local function ReceiveEndFile()
 	currentFile:close()
-	Spring.Echo("pgm data written to " .. currentFilename)
+	Spring.Echo(currentFilename .. " written")
 end
 
 local function ReceiveMeteor(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
@@ -168,6 +168,12 @@ function widget:KeyPress(key, mods, isRepeat)
 			LoonyCommand("bypasstoggle")
 		elseif key == ascii("m") then
 			LoonyCommand("mirrornext")
+		elseif key == ascii("a") then
+			LoonyCommand("attribpgm")
+		elseif key == ascii("h") then
+			LoonyCommand("heightpgm")
+		elseif key == ascii("u") then
+			LoonyCommand("underlyingmaretoggle")
 		end
 	end
 end
