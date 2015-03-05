@@ -1,7 +1,7 @@
 function widget:GetInfo()
 	return {
-		name	= "Loony: Meteor Impact Command",
-		desc	= "sends commands to the meteor impact gadget",
+		name	= "Loony: Meteor Impact Interface",
+		desc	= "UI for the Meteor Impacts gadget. Also does file I/O.",
 		author  = "zoggop",
 		date 	= "February 2015",
 		license	= "whatever",
@@ -119,13 +119,12 @@ local function ReceiveReadFile(name, ext)
     Spring.SendLuaGaiaMsg("loony fileend")
 end
 
-local function ReceiveMeteor(sx, sz, diameterSpring, velocityImpact, angleImpact, densityImpactor, age)
-	local m = { x = sx, z = sz, diameterSpring = diameterSpring, velocityImpact = velocityImpact, angleImpact = angleImpact, densityImpactor = densityImpactor, age = age, radius = diameterSpring / 2, y = Spring.GetGroundHeight(sx, sz) }
+local function ReceiveMeteor(sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age, craterRadius)
+	local m = { x = sx, z = sz, diameterImpactor = diameterImpactor, velocityImpact = velocityImpact, angleImpact = angleImpact, densityImpactor = densityImpactor, age = age, craterRadius = craterRadius, y = Spring.GetGroundHeight(sx, sz) }
 	table.insert(currentMeteors, m)
 end
 
 local function ReceiveBypassSpring(stateString)
-	Spring.Echo(stateString)
 	if stateString == "true" then
 		bypassSpring = true
 	elseif stateString == "false" then
@@ -232,7 +231,7 @@ function widget:DrawWorld()
 		gl.LineWidth(1)
 		gl.Color(0, 1, 0, 1)
 		for i, m in pairs(currentMeteors) do
-			gl.DrawGroundCircle(m.x, m.y, m.z, m.radius, 8)
+			gl.DrawGroundCircle(m.x, m.y, m.z, m.craterRadius, 8)
 		end
 	end
 	gl.LineWidth(1)

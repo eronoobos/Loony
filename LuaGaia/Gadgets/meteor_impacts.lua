@@ -1,9 +1,9 @@
 function gadget:GetInfo()
   return {
     name      = "Loony: Meteor Impacts",
-    desc      = "Generates a new heightmap of meteor impact craters.",
+    desc      = "Generates a map of meteor impact craters.",
     author    = "zoggop",
-    date      = "January 2015",
+    date      = "February 2015",
     license   = "whatever",
     layer     = -3,
     enabled   = true
@@ -20,27 +20,47 @@ local piHalf = math.pi / 2
 local piEighth = math.pi / 8
 local piTwelfth = math.pi / 12
 local piSixteenth = math.pi / 16
-local atan2 = math.atan2
 local twoSqrtTwo = 2 * math.sqrt(2)
 local naturalE = math.exp(1)
 local radiansPerAngle = math.pi / 180
 
+local mSqrt = math.sqrt
+local mRandom = math.random
+local mMin = math.min
+local mMax = math.max
+local mAtan2 = math.atan2
+local mExp = math.exp
+local mCeil = math.ceil
+local mFloor = math.floor
+local mAbs = math.abs
+local mMix = math.mix
+local mSmoothstep = math.smoothstep
+
 local tInsert = table.insert
 local tRemove = table.remove
+local tSort = table.sort
 
 local spSetHeightMapFunc = Spring.SetHeightMapFunc
+local spSetHeightMap = Spring.SetHeightMap
 local spAdjustHeightMap = Spring.AdjustHeightMap
+local spEcho = Spring.Echo
+local spSetMetalAmount = Spring.SetMetalAmount
+local spGetMetalAmount = Spring.GetMetalAmount
+local spGetGameFrame = Spring.GetGameFrame
+local spLevelHeightMap = Spring.LevelHeightMap
+local spGetGroundHeight = Spring.GetGroundHeight
 
 -- config:
 
-local bypassSpring = true
-local yesMare = false
-local fileMaxPacketLength = 1024
+local bypassSpring = true -- if false, automatically write to spring's height map
+local yesMare = false -- send huge melt-floor-generating meteors before a shower?
+local fileMaxPacketLength = 1024 -- how many bytes to accumulate in the fileBuffer before sending to unsynced
 
 -- local variables:
 
 local myWorld
 local heightMapRuler, metalMapRuler
+local gadgetInitialized = false
 
 local diffDistances = {}
 local diffDistancesSq = {}
@@ -135,28 +155,28 @@ local function uint8(n)
   return string.char( n%256 )
 end
 
-local function ReadFile(name, ext, endFunc)
+local function FReadOpen(name, ext, endFunc)
   readBuffer = ""
   readEndFunc = endFunc
   SendToUnsynced("ReadFile", name, ext)
 end
 
-local function ReadLine(line)
+local function FReadLine(line)
   readBuffer = readBuffer .. line .. "\n"
 end
 
-local function ReadEnd()
-  -- Spring.Echo(readBuffer)
+local function FReadClose()
+  -- spEcho(readBuffer)
   readEndFunc(readBuffer)
   readBuffer = ""
 end
 
-local function OpenFile(name, ext, mode)
+local function FWriteOpen(name, ext, mode)
   fileBuffer = ""
   SendToUnsynced("BeginFile", name, ext, mode)
 end
 
-local function WriteFile(...)
+local function FWrite(...)
   local send = ""
   for i, str in ipairs({...}) do
     send = send .. str
@@ -168,7 +188,7 @@ local function WriteFile(...)
   end
 end
 
-local function CloseFile()
+local function FWriteClose()
   if fileBuffer:len() > 0 then SendToUnsynced("PieceFile", fileBuffer) end
   SendToUnsynced("EndFile")
   fileBuffer = ""
@@ -176,50 +196,50 @@ end
 
 local function serialize(o)
   if type(o) == "number" then
-    WriteFile(o)
+    FWrite(o)
   elseif type(o) == "boolean" then
-    WriteFile(tostring(o))
+    FWrite(tostring(o))
   elseif type(o) == "string" then
-    WriteFile(string.format("%q", o))
+    FWrite(string.format("%q", o))
   elseif type(o) == "table" then
-    WriteFile("{")
+    FWrite("{")
     for k,v in pairs(o) do
       if not (type(k) == "string" and OnWorldSaveBlackList(k)) then
         local kStr = k
         if type(k) == "number" then kStr = "[" .. k .. "]" end
-        WriteFile("\n  ", kStr, " = ")
+        FWrite("\n  ", kStr, " = ")
         serialize(v)
-        WriteFile(",")
+        FWrite(",")
       end
     end
-    WriteFile("}")
+    FWrite("}")
   else
-    -- Spring.Echo("cannot serialize a " .. type(o))
-    WriteFile("\"" .. type(o) .. "\"")
+    -- spEcho("cannot serialize a " .. type(o))
+    FWrite("\"" .. type(o) .. "\"")
   end
 end
 
 local function sqrt(number)
-  sqrts[number] = sqrts[number] or math.sqrt(number)
+  sqrts[number] = sqrts[number] or mSqrt(number)
   return sqrts[number]
 end
 
 local function MinMaxRandom(minimum, maximum)
-  return (math.random() * (maximum - minimum)) + minimum
+  return (mRandom() * (maximum - minimum)) + minimum
 end
 
 local function RandomVariance(variance)
-  return (1-variance) + (math.random() * variance * 2)
+  return (1-variance) + (mRandom() * variance * 2)
 end
 
 local function VaryWithinBounds(value, variance, minimum, maximum)
   if not value then return nil end
-  return math.max(math.min(value*RandomVariance(variance), maximum), minimum)
+  return mMax(mMin(value*RandomVariance(variance), maximum), minimum)
 end
 
 local function AngleDXDY(dx, dy)
   angles[dx] = angles[dx] or {}
-  angles[dx][dy] = angles[dx][dy] or atan2(dy, dx)
+  angles[dx][dy] = angles[dx][dy] or mAtan2(dy, dx)
   return angles[dx][dy]
 end
 
@@ -244,28 +264,28 @@ end
 
 local function splitIntoWords(s)
   local words = {}
-  for w in s:gmatch("%S+") do table.insert(words, w) end
+  for w in s:gmatch("%S+") do tInsert(words, w) end
   return words
 end
 
 local function Gaussian(x, c)
   gaussians[x] = gaussians[x] or {}
-  gaussians[x][c] = gaussians[x][c] or math.exp(  -( (x^2) / (2*(c^2)) )  )
+  gaussians[x][c] = gaussians[x][c] or mExp(  -( (x^2) / (2*(c^2)) )  )
   return gaussians[x][c]
 end
 
 local function DiceRoll(dice)
   local n = 0
   for d = 1, dice do
-    n = n + (math.random() / dice)
+    n = n + (mRandom() / dice)
   end
   return n
 end
 
 function pairsByKeys (t, f)
   local a = {}
-  for n in pairs(t) do table.insert(a, n) end
-  table.sort(a, f)
+  for n in pairs(t) do tInsert(a, n) end
+  tSort(a, f)
   local i = 0      -- iterator variable
   local iter = function ()   -- iterator function
     i = i + 1
@@ -281,10 +301,10 @@ local function EndCommand(command)
 end
 
 local function ClearMetalSquare(x, z, size)
-  local halfSize = math.ceil(size / 2)
+  local halfSize = mCeil(size / 2)
   for ix = x-halfSize, x+halfSize do
     for iz = z-halfSize, z+halfSize do
-      Spring.SetMetalAmount(ix, iz, 0)
+      spSetMetalAmount(ix, iz, 0)
     end
   end
 end
@@ -292,7 +312,7 @@ end
 local function ClearMetalMap()
   for x = 0, Game.mapSizeX/16 do
     for z = 0, Game.mapSizeZ/16 do
-      Spring.SetMetalAmount(x, z, 0)
+      spSetMetalAmount(x, z, 0)
     end
   end
 end
@@ -308,10 +328,10 @@ local function WriteMetalSpot(spot)
       pixels = 13
     end
     local mAmount = (1000 / pixels) * metal
-    local x, z = math.ceil(spot.x/16)-1, math.ceil(spot.z/16)-1
-    if(x == nil or z == nil) then Spring.Echo("FATAL ERROR: x or y was nil for index " .. i) end
+    local x, z = mCeil(spot.x/16)-1, mCeil(spot.z/16)-1
+    if(x == nil or z == nil) then spEcho("FATAL ERROR: x or y was nil for index " .. i) end
     for p = 1, pixels do
-      Spring.SetMetalAmount(x + metalPixelCoords[p][1], z + metalPixelCoords[p][2], mAmount)
+      spSetMetalAmount(x + metalPixelCoords[p][1], z + metalPixelCoords[p][2], mAmount)
     end
 end
 
@@ -369,11 +389,15 @@ end
 World = class(function(a, metersPerElmo, baselevel, gravity, density, mirror)
   a.metersPerElmo = metersPerElmo or 1 -- meters per elmo for meteor simulation model only
   a.metersPerSquare = a.metersPerElmo * Game.squareSize
-  Spring.Echo(a.metersPerElmo, a.metersPerSquare)
+  spEcho(a.metersPerElmo, a.metersPerSquare)
   a.baselevel = baselevel or 0
   a.gravity = gravity or (Game.gravity / 130) * 9.8
   a.density = density or (Game.mapHardness / 100) * 2500
   a.complexDiameter = 3200 / (a.gravity / 9.8)
+  local Dc = a.complexDiameter / 1000
+  a.complexDiameterCutoff = ((Dc / 1.17) * (Dc ^ 0.13)) ^ (1/1.13)
+  a.complexDiameterCutoff = a.complexDiameterCutoff * 1000
+  a.complexDepthScaleFactor = ((a.gravity / 1.6) + 1) / 2
   a.mirror = mirror or "none"
   a.minMetalMeteorDiameter = 3
   a.maxMetalMeteorDiameter = 10
@@ -382,13 +406,17 @@ World = class(function(a, metersPerElmo, baselevel, gravity, density, mirror)
   a.minGeothermalMeteorDiameter = 8
   a.maxGeothermalMeteorDiameter = 20
   a.geothermalMeteorProbability = 1.0
+  a.rimTerracing = true
+  -- local echostr = ""
+  -- for k, v in pairs(a) do echostr = echostr .. tostring(k) .. "=" .. tostring(v) .. " " end
+  -- spEcho(echostr)
   a:Clear()
 end)
 
 MapRuler = class(function(a, elmosPerPixel, width, height)
   elmosPerPixel = elmosPerPixel or Game.mapSizeX / (width-1)
-  width = width or math.ceil(Game.mapSizeX / elmosPerPixel)
-  height = height or math.ceil(Game.mapSizeZ / elmosPerPixel)
+  width = width or mCeil(Game.mapSizeX / elmosPerPixel)
+  height = height or mCeil(Game.mapSizeZ / elmosPerPixel)
   a.elmosPerPixel = elmosPerPixel
   a.width = width
   a.height = height
@@ -410,11 +438,11 @@ HeightBuffer = class(function(a, world, mapRuler)
   a.minHeight = 0
   a.directToSpring = false
   a.antiAlias = false
-  Spring.Echo("new height buffer created", a.w, " by ", a.h)
+  spEcho("new height buffer created", a.w, " by ", a.h)
 end)
 
 Renderer = class(function(a, world, mapRuler, pixelsPerFrame, renderType, uiCommand, heightBuf, noCraters, radius)
-  a.startFrame = Spring.GetGameFrame()
+  a.startFrame = spGetGameFrame()
   a.uiCommand = uiCommand or ""
   a.world = world
   a.mapRuler = mapRuler
@@ -427,7 +455,7 @@ Renderer = class(function(a, world, mapRuler, pixelsPerFrame, renderType, uiComm
   if not noCraters then
     for i, m in ipairs(world.meteors) do
       local crater = Crater(m, a)
-      table.insert(a.craters, crater)
+      tInsert(a.craters, crater)
       a.totalCraterArea = a.totalCraterArea + crater.area
     end
   end
@@ -467,8 +495,21 @@ Crater = class(function(a, meteor, renderer)
     a.peakRadius = a.radius / 5.5
     a.peakRadiusSq = a.peakRadius ^ 2
     a.peakPersistence = 0.3*(meteor.world.complexDiameter/meteor.diameterSimple)^2
-    -- Spring.Echo(a.peakPersistence)
+    -- spEcho(a.peakPersistence)
     a.peakNoise = TwoDimensionalNoise(meteor.peakSeed, a.peakRadius * 2 * (1+meteor.distWobbleAmount) * (1+meteor.peakRadialNoise.intensity), meteor.craterPeakHeight, a.peakPersistence, 5+(8-elmosPerPixel), 1, 0.5, 1)
+  end
+
+  if meteor.terraceSeeds then
+    local tmin = a.radiusSq * 0.35
+    local tmax = a.radiusSq * 0.8
+    local tdif = tmax - tmin
+    local terraceWidth = tdif / #meteor.terraceSeeds
+    local terraceFlatWidth = terraceWidth * 0.5
+    a.terraces = {}
+    for i = 1, #meteor.terraceSeeds do
+      a.terraces[i] = { max = tmin + (i*terraceWidth), noise = WrapNoise(12, terraceFlatWidth, meteor.terraceSeeds[i], 0.5, 2) }
+    end
+    a.terraceMin = tmin
   end
 
   a.width = a.xmax - a.xmin + 1
@@ -481,14 +522,15 @@ Crater = class(function(a, meteor, renderer)
 end)
 
 -- Meteor stores data and does meteor impact model calculations
+-- meteor impact model equations based on 
 Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age)
   -- coordinates sx and sz are in spring coordinates (elmos)
   a.world = world
   if not sx then return end
-  a.sx, a.sz = math.floor(sx), math.floor(sz)
+  a.sx, a.sz = mFloor(sx), mFloor(sz)
 
   a.diameterImpactor = diameterImpactor or 10
-  -- Spring.Echo(math.floor(a.diameterImpactor) .. " meter object")
+  -- spEcho(mFloor(a.diameterImpactor) .. " meter object")
   a.velocityImpactKm = velocityImpactKm or 30
   a.angleImpact = angleImpact or 45
   a.densityImpactor = densityImpactor or 8000
@@ -496,17 +538,16 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
   a.ageRatio = a.age / 100
 
   if a.diameterImpactor > world.minMetalMeteorDiameter and a.diameterImpactor < world.maxMetalMeteorDiameter then
-    if math.random() < world.metalMeteorProbability then a.metal = true end
+    if mRandom() < world.metalMeteorProbability then a.metal = true end
   end
   if a.diameterImpactor > world.minGeothermalMeteorDiameter and a.diameterImpactor < world.maxGeothermalMeteorDiameter then
-    if math.random() < world.geothermalMeteorProbability then a.geothermal = true end
+    if mRandom() < world.geothermalMeteorProbability then a.geothermal = true end
   end
 
   a.velocityImpact = a.velocityImpactKm * 1000
   a.angleImpactRadians = a.angleImpact * radiansPerAngle
   a.diameterTransient = 1.161 * ((a.densityImpactor / world.density) ^ 0.33) * (a.diameterImpactor ^ 0.78) * (a.velocityImpact ^ 0.44) * (world.gravity ^ -0.22) * (math.sin(a.angleImpactRadians) ^ 0.33)
   a.diameterSimple = a.diameterTransient * 1.25
-  a.diameterComplex = 1.17 * ((a.diameterTransient ^ 1.13) / (world.complexDiameter ^ 0.13))
   a.depthTransient = a.diameterTransient / twoSqrtTwo
   a.rimHeightTransient = a.diameterTransient / 14.1
   a.rimHeightSimple = 0.07 * ((a.diameterTransient ^ 4) / (a.diameterSimple ^ 3))
@@ -519,59 +560,58 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
   a.craterRimHeight = a.rimHeightSimple / world.metersPerElmo
 
   a.heightWobbleAmount = MinMaxRandom(0.15, 0.35)
-  a.distSeed = math.floor(math.random() * 1000)
-  a.heightSeed = math.floor(math.random() * 1000)
-  a.blastSeed = math.floor(math.random() * 1000)
+  a.distSeed = mFloor(mRandom() * 1000)
+  a.heightSeed = mFloor(mRandom() * 1000)
+  a.blastSeed = mFloor(mRandom() * 1000)
   a.rayWobbleAmount = MinMaxRandom(0.3, 0.4)
-  a.raySeed = math.floor(math.random() * 1000)
+  a.raySeed = mFloor(mRandom() * 1000)
 
-  a.complex = a.diameterSimple > world.complexDiameter * RandomVariance(0.1)
+  a.complex = a.diameterTransient > world.complexDiameterCutoff
   if a.complex then
     a.bowlPower = 3
     local Dtc = a.diameterTransient / 1000
     local Dc = world.complexDiameter / 1000
     a.diameterComplex = 1.17 * ((Dtc ^ 1.13) / (Dc ^ 0.13))
-    a.depthComplex = 0.4 * (a.diameterComplex ^ 0.3)
+    a.depthComplex = (1.04 / world.complexDepthScaleFactor) * (a.diameterComplex ^ 0.301)
     a.diameterComplex = a.diameterComplex * 1000
     a.depthComplex = a.depthComplex * 1000
-    a.craterDepth = ((a.depthComplex + a.rimHeightSimple)  ) / world.metersPerElmo
-    -- a.craterDepth = a.craterDepth * math.min(1-a.ageRatio, 0.5)
-    --[[
-    impactor.crMass = ((Math.PI * Math.pow(impactor.pjDiam, 3)) / 6) * impactor.pjDens;
-    Log.i(LOGTAG, "Mass " + impactor.crMass);
-    impactor.pjEnergy = 0.5 * impactor.crMass * Math.pow((impactor.pjVel * 1000), 2);
-    ]]--
+    a.craterDepth = (a.depthComplex + a.rimHeightSimple) / world.metersPerElmo
     a.mass = (pi * (a.diameterImpactor ^ 3) / 6) * a.densityImpactor
     a.energyImpact = 0.5 * a.mass * (a.velocityImpact^2)
-    -- a.energyImpact = piTwelfth * a.densityImpactor * (a.diameterImpactor ^ 3) * (a.velocityImpact ^ 2)
     a.meltVolume = 8.9 * 10^(-12) * a.energyImpact * math.sin(a.angleImpactRadians)
     a.meltThickness = (4 * a.meltVolume) / (pi * (a.diameterTransient ^ 2))
     a.craterRadius = (a.diameterComplex / 2) / world.metersPerElmo
     a.craterMeltThickness = a.meltThickness / world.metersPerElmo
     a.meltSurface = a.craterRimHeight + a.craterMeltThickness - a.craterDepth
-    -- Spring.Echo(a.energyImpact, a.meltVolume, a.meltThickness)
+    -- spEcho(a.energyImpact, a.meltVolume, a.meltThickness)
     a.craterPeakHeight = a.craterDepth * 0.5
-    a.peakRadialSeed = math.floor(math.random() * 1000)
+    a.peakRadialSeed = mFloor(mRandom() * 1000)
     a.peakRadialNoise = WrapNoise(16, 0.75, a.peakRadialSeed)
-    a.peakSeed = math.floor(math.random() * 1000)
+    a.peakSeed = mFloor(mRandom() * 1000)
     a.distWobbleAmount = MinMaxRandom(0.1, 0.2)
-    a.distNoise = WrapNoise(math.max(math.ceil(a.craterRadius / 20), 8), a.distWobbleAmount, a.distSeed, 0.4, 4)
+    a.distNoise = WrapNoise(mMax(mCeil(a.craterRadius / 20), 8), a.distWobbleAmount, a.distSeed, 0.4, 4)
+    -- spEcho( mFloor(a.diameterImpactor), mFloor(a.diameterComplex), mFloor(a.depthComplex), a.diameterComplex/a.depthComplex, mFloor(a.diameterTransient), mFloor(a.depthTransient) )
+    if world.rimTerracing then
+      local terraceNum = mCeil(a.diameterTransient / world.complexDiameterCutoff)
+      a.terraceSeeds = {}
+      for i = 1, terraceNum do a.terraceSeeds[i] = mCeil(mRandom()*1000) end
+    end
   else
     a.bowlPower = 1
     a.craterDepth = ((a.depthSimple + a.rimHeightSimple)  ) / world.metersPerElmo
-    -- a.craterDepth = a.craterDepth * math.min(1-a.ageRatio, 0.5)
+    -- a.craterDepth = a.craterDepth * mMin(1-a.ageRatio, 0.5)
     a.craterRadius = (a.diameterSimple / 2) / world.metersPerElmo
     a.craterFalloff = a.craterRadius * 0.66
     a.rayHeight = (a.craterRimHeight / 2)
     a.distWobbleAmount = MinMaxRandom(0.05, 0.15)
-    a.distNoise = WrapNoise(math.max(math.ceil(a.craterRadius / 35), 8), a.distWobbleAmount, a.distSeed, 0.3, 5)
+    a.distNoise = WrapNoise(mMax(mCeil(a.craterRadius / 35), 8), a.distWobbleAmount, a.distSeed, 0.3, 5)
     a.rayNoise = WrapNoise(24, a.rayWobbleAmount, a.raySeed, 0.5, 3)
   end
 
-  a.heightNoise = WrapNoise(math.max(math.ceil(a.craterRadius / 45), 8), a.heightWobbleAmount, a.heightSeed)
+  a.heightNoise = WrapNoise(mMax(mCeil(a.craterRadius / 45), 8), a.heightWobbleAmount, a.heightSeed)
   if a.age < 10 then
-    a.blastNoise = WrapNoise(math.min(math.max(math.ceil(a.craterRadius), 32), 512), 0.5, a.blastSeed, 1, 1)
-    -- Spring.Echo(a.blastNoise.length)
+    a.blastNoise = WrapNoise(mMin(mMax(mCeil(a.craterRadius), 32), 512), 0.5, a.blastSeed, 1, 1)
+    -- spEcho(a.blastNoise.length)
   end
 end)
 
@@ -583,7 +623,7 @@ WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude
   a.angleDivisor = twicePi / length
   a.length = length
   a.intensity = intensity or 1
-  seed = seed or math.floor(math.random()*length*1000)
+  seed = seed or mFloor(mRandom()*length*1000)
   a.seed = seed
   a.halfLength = length / 2
   persistence = persistence or 0.25
@@ -592,17 +632,17 @@ WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude
   a.persistance = persistance
   a.N = N
   a.amplitude = amplitude
-  local radius = math.ceil(length / pi)
+  local radius = mCeil(length / pi)
   local diameter = radius * 2
   local yx = perlin2D( seed, diameter+1, diameter+1, persistence, N, amplitude )
   local i = 1
   local angleIncrement = twicePi / length
   a.valuesByAngle = {}
   for angle = -pi, pi, angleIncrement do
-    local x = math.floor(radius + (radius * math.cos(angle))) + 1
-    local y = math.floor(radius + (radius * math.sin(angle))) + 1
+    local x = mFloor(radius + (radius * math.cos(angle))) + 1
+    local y = mFloor(radius + (radius * math.sin(angle))) + 1
     local val = yx[y][x]
-    if math.abs(val) > a.absMaxValue then a.absMaxValue = math.abs(val) end
+    if mAbs(val) > a.absMaxValue then a.absMaxValue = mAbs(val) end
     a.values[i] = val
     a.valuesByAngle[angle] = val
     i = i + 1
@@ -614,13 +654,13 @@ end)
 
 TwoDimensionalNoise = class(function(a, seed, sideLength, intensity, persistence, N, amplitude, blackValue, whiteValue, doNotNormalize)
   a.noiseType = "TwoDimensional"
-  a.sideLength = math.ceil(sideLength)
-  a.halfSideLength = math.floor(a.sideLength / 2)
+  a.sideLength = mCeil(sideLength)
+  a.halfSideLength = mFloor(a.sideLength / 2)
   a.intensity = intensity or 1
   persistence = persistence or 0.25
   N = N or 5
   amplitude = amplitude or 1
-  seed = seed or math.floor(math.random()*sideLength*1000)
+  seed = seed or mFloor(mRandom()*sideLength*1000)
   a.yx = perlin2D( seed, sideLength+1, sideLength+1, persistence, N, amplitude )
   blackValue = blackValue or 0
   whiteValue = whiteValue or 0
@@ -640,14 +680,14 @@ TwoDimensionalNoise = class(function(a, seed, sideLength, intensity, persistence
       end
     end
     local vd = vmax - vmin
-    -- Spring.Echo("vmin", vmin, "vmax", vmax, "vd" , vd)
+    -- spEcho("vmin", vmin, "vmax", vmax, "vd" , vd)
     a.xy = {}
     for y, xx in ipairs(a.yx) do
       for x, v in ipairs(xx) do
         a.xy[x] = a.xy[x] or {}
         local nv = (v - vmin) / vd
-        nv = math.max(nv - blackValue, 0) / (1-blackValue)
-        nv = math.min(nv, whiteValue) / whiteValue
+        nv = mMax(nv - blackValue, 0) / (1-blackValue)
+        nv = mMin(nv, whiteValue) / whiteValue
         a.xy[x][y] = nv * a.intensity
       end
     end
@@ -665,16 +705,16 @@ function World:Clear()
   SendToUnsynced("ClearMeteors")
   SendToUnsynced("RenderStatus", "none")
   if not bypassSpring then
-    Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.baselevel)
+    spLevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.baselevel)
   end
 end
 
 function World:Save(name)
   name = name or ""
-  OpenFile("world"..name, "lua", "w")
-  WriteFile("return ")
+  FWriteOpen("world"..name, "lua", "w")
+  FWrite("return ")
   serialize(self)
-  CloseFile()
+  FWriteClose()
 end
 
 function World:Load(luaStr)
@@ -694,10 +734,10 @@ function World:Load(luaStr)
     m = newm
     m:BuildNoise()
     self.meteors[i] = m
-    SendToUnsynced("Meteor", m.sx, m.sz, m.diameterImpactor, m.velocityImpactKm, m.angleImpact, m.densityImpactor, m.age)
+    m:Pass()
   end
   self.heightBuf.changesPending = true
-  Spring.Echo("world loaded with " .. #self.meteors .. " meteors")
+  spEcho("world loaded with " .. #self.meteors .. " meteors")
 end
 
 function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVelocity, minAngle, maxAngle, minDensity, maxDensity, underlyingMare)
@@ -719,21 +759,21 @@ function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVe
   local diameterDif = maxDiameter - minDiameter
   for n = 1, number do
     -- local diameter = MinMaxRandom(minDiameter, maxDiameter)^100
-    local diameter = minDiameter + (math.abs(DiceRoll(30)-0.5) * diameterDif * 2)
-    -- Spring.Echo(diameter)
+    local diameter = minDiameter + (mAbs(DiceRoll(30)-0.5) * diameterDif * 2)
+    -- spEcho(diameter)
     local velocity = MinMaxRandom(minVelocity, maxVelocity)
     local angle = MinMaxRandom(minAngle, maxAngle)
     local density = MinMaxRandom(minDensity, maxDensity)
-    local x = math.floor(math.random() * Game.mapSizeX)
-    local z = math.floor(math.random() * Game.mapSizeZ)
-    self:AddMeteor(x, z, diameter, velocity, angle, density, math.floor((number-n)*hundredConv))
+    local x = mFloor(mRandom() * Game.mapSizeX)
+    local z = mFloor(mRandom() * Game.mapSizeZ)
+    self:AddMeteor(x, z, diameter, velocity, angle, density, mFloor((number-n)*hundredConv))
   end
 end
 
 function World:AddMeteor(sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age, doNotMirror)
   local m = Meteor(self, sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age)
-  table.insert(self.meteors, m)
-  SendToUnsynced("Meteor", sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age)
+  tInsert(self.meteors, m)
+  m:Pass()
   if self.mirror ~= "none" and not doNotMirror then
     local nsx, nsz
     if self.mirror == "reflectionalx" then
@@ -758,19 +798,19 @@ function World:RenderHeightSpring(uiCommand)
   if self.heightBuf.changesPending then
     self.heightBuf:Clear()
     local renderer = Renderer(self, heightMapRuler, 4000, "Height", uiCommand, self.heightBuf)
-    table.insert(self.renderers, renderer)
+    tInsert(self.renderers, renderer)
   end
-  table.insert(self.renderers, Renderer(self, heightMapRuler, 6000, "HeightSpring", uiCommand, self.heightBuf, true))
+  tInsert(self.renderers, Renderer(self, heightMapRuler, 6000, "HeightSpring", uiCommand, self.heightBuf, true))
 end
 
 function World:RenderAttributes(uiCommand)
   local renderer = Renderer(self, heightMapRuler, 8000, "Attributes", uiCommand)
-  table.insert(self.renderers, renderer)
+  tInsert(self.renderers, renderer)
 end
 
 function World:RenderMetal(uiCommand)
   local renderer = Renderer(self, metalMapRuler, 16000, "Metal", uiCommand, nil, true)
-  table.insert(self.renderers, renderer)
+  tInsert(self.renderers, renderer)
 end
 
 --------------------------------------
@@ -779,8 +819,8 @@ function MapRuler:XZtoXY(x, z)
   if self.elmosPerPixel == 1 then
     return x+1, (Game.mapSizeZ - z)+1
   else
-    local hx = math.floor(x / self.elmosPerPixel) + 1
-    local hy = math.floor((Game.mapSizeZ - z) / self.elmosPerPixel) + 1
+    local hx = mFloor(x / self.elmosPerPixel) + 1
+    local hy = mFloor((Game.mapSizeZ - z) / self.elmosPerPixel) + 1
     return hx, hy
   end
 end
@@ -789,19 +829,19 @@ function MapRuler:XYtoXZ(x, y)
   if self.elmosPerPixel == 1 then
     return x-1, (Game.mapSizeZ - (y-1))
   else
-    local sx = math.floor((x-1) * self.elmosPerPixel)
-    local sz = math.floor(Game.mapSizeZ - ((y-1) * self.elmosPerPixel))
-    -- if y == self.height then Spring.Echo(y, sz, Game.mapSizeZ, self.elmosPerPixel, y-1) end
+    local sx = mFloor((x-1) * self.elmosPerPixel)
+    local sz = mFloor(Game.mapSizeZ - ((y-1) * self.elmosPerPixel))
+    -- if y == self.height then spEcho(y, sz, Game.mapSizeZ, self.elmosPerPixel, y-1) end
     return sx, sz
   end
 end
 
 function MapRuler:RadiusBounds(x, y, radius)
   local w, h = self.width, self.height
-  local xmin = math.floor(x - radius)
-  local xmax = math.ceil(x + radius)
-  local ymin = math.floor(y - radius)
-  local ymax = math.ceil(y + radius)
+  local xmin = mFloor(x - radius)
+  local xmax = mCeil(x + radius)
+  local ymin = mFloor(y - radius)
+  local ymax = mCeil(y + radius)
   if xmin < 1 then xmin = 1 end
   if xmax > w then xmax = w end
   if ymin < 1 then ymin = 1 end
@@ -813,11 +853,11 @@ end
 
 function HeightBuffer:CoordsOkay(x, y)
   if not self.heights[x] then
-    -- Spring.Echo("no row at ", x)
+    -- spEcho("no row at ", x)
     return
   end
   if not self.heights[x][y] then
-    -- Spring.Echo("no pixel at ", x, y)
+    -- spEcho("no pixel at ", x, y)
     return
   end
   return true
@@ -831,7 +871,7 @@ end
 function HeightBuffer:Write(x, y, height)
   if not self.directToSpring then return end
   local sx, sz = self.mapRuler:XYtoXZ(x, y)
-  Spring.LevelHeightMap(sx, sz, sx+8, sz-8, self.world.baselevel+height)
+  spLevelHeightMap(sx, sz, sx+8, sz-8, self.world.baselevel+height)
 end
 
 function HeightBuffer:Add(x, y, height, alpha)
@@ -899,30 +939,30 @@ end
 
 function HeightBuffer:Blur(radius, uiCommand)
   radius = radius or 1
-  table.insert(self.world.renderers, Renderer(self.world, self.mapRuler, 2000, "HeightBlur", uiCommand, self, true, radius))
+  tInsert(self.world.renderers, Renderer(self.world, self.mapRuler, 2000, "HeightBlur", uiCommand, self, true, radius))
 end
 
 function HeightBuffer:WriteToSpring(uiCommand)
   if bypassSpring then return end
-  table.insert(self.world.renderers, Renderer(self.world, self.mapRuler, 6000, "HeightSpring", uiCommand, self, true))
+  tInsert(self.world.renderers, Renderer(self.world, self.mapRuler, 6000, "HeightSpring", uiCommand, self, true))
 end
 
 function HeightBuffer:Read()
   for sx=0,Game.mapSizeX, Game.squareSize do
     for sz=Game.mapSizeZ,0, -Game.squareSize do
       local x, y = XZtoHXHY(sx, sz)
-      local height = (Spring.GetGroundHeight(sx, sz) - self.world.baselevel) / 8
+      local height = (spGetGroundHeight(sx, sz) - self.world.baselevel) / 8
       self:Set(x, y, height)
     end
   end
-  Spring.Echo("height buffer read from map")
+  spEcho("height buffer read from map")
 end
 
 function HeightBuffer:SendFile(uiCommand)
   if self.changesPending then
-    table.insert(self.world.renderers, Renderer(self.world, self.mapRuler, 4000, "Height", uiCommand, self))
+    tInsert(self.world.renderers, Renderer(self.world, self.mapRuler, 4000, "Height", uiCommand, self))
   end
-  table.insert(self.world.renderers, Renderer(self.world, self.mapRuler, 15000, "HeightImage", uiCommand, self, true))
+  tInsert(self.world.renderers, Renderer(self.world, self.mapRuler, 15000, "HeightImage", uiCommand, self, true))
 end
 
 function HeightBuffer:Clear()
@@ -959,7 +999,7 @@ function Renderer:Frame()
     SendToUnsynced("RenderStatus", "none")
   end
   if self.progress > self.totalProgress or not progress then
-    -- Spring.Echo(self.progress .. " / " .. self.totalProgress)
+    -- spEcho(self.progress .. " / " .. self.totalProgress)
     self:Finish()
     SendToUnsynced("RenderStatus", "none")
   end
@@ -968,8 +1008,8 @@ end
 function Renderer:Finish()
   self:FinishFunc()
   if not self.dontEndUiCommand then EndCommand(self.uiCommand) end
-  local frameDiff = Spring.GetGameFrame() - self.startFrame
-  Spring.Echo(self.renderType .. " (" .. self.mapRuler.width .. "x" .. self.mapRuler.height .. ") rendered in " .. frameDiff .. " frames")
+  local frameDiff = spGetGameFrame() - self.startFrame
+  spEcho(self.renderType .. " (" .. self.mapRuler.width .. "x" .. self.mapRuler.height .. ") rendered in " .. frameDiff .. " frames")
   self.complete = true
 end
 
@@ -978,12 +1018,12 @@ function Renderer:EmptyPreinit()
 end
 
 function Renderer:EmptyInit()
-  -- Spring.Echo("emptyinit")
+  -- spEcho("emptyinit")
   return
 end
 
 function Renderer:EmptyFinish()
-  -- Spring.Echo("emptyfinish")
+  -- spEcho("emptyfinish")
   return
 end
 
@@ -1009,7 +1049,7 @@ function Renderer:HeightFrame()
     end
     if c.currentPixel > c.area then
       c.complete = true
-      table.remove(self.craters, 1)
+      tRemove(self.craters, 1)
     end
     if pixelsRendered == self.pixelsPerFrame then break end
   end
@@ -1017,7 +1057,7 @@ function Renderer:HeightFrame()
 end
 
 function Renderer:HeightFinish()
-  -- Spring.LevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.world.baselevel)
+  -- spLevelHeightMap(0, 0, Game.mapSizeX, Game.mapSizeZ, self.world.baselevel)
   if not self.heightBuf.directToSpring then
     -- self.heightBuf:WriteToSpring(self.uiCommand)
     self.dontEndUiCommand = true
@@ -1026,17 +1066,17 @@ function Renderer:HeightFinish()
 end
 
 function Renderer:HeightSpringFrame()
-  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pixelsThisFrame = mMin(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
-  Spring.SetHeightMapFunc(function()
+  spSetHeightMapFunc(function()
     for p = pMin, pMax do
       local x = (p % self.mapRuler.width) + 1
-      local y = math.floor(p / self.mapRuler.width) + 1
+      local y = mFloor(p / self.mapRuler.width) + 1
       local sx, sz = self.mapRuler:XYtoXZ(x, y)
       local height = (self.heightBuf:Get(x, y) or 0) --* self.elmosPerPixel -- because the horizontal is all scaled to the heightmap
-      local set = Spring.SetHeightMap(sx, sz, self.world.baselevel+height)
-      if not set then Spring.Echo("bad setheightmap coordinate", sx, sz, x, y) end
+      local set = spSetHeightMap(sx, sz, self.world.baselevel+height)
+      if not set then spEcho("bad setheightmap coordinate", sx, sz, x, y) end
     end
   end)
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
@@ -1044,45 +1084,45 @@ function Renderer:HeightSpringFrame()
 end
 
 function Renderer:HeightSpringFinish()
-  Spring.Echo("height buffer written to map")
+  spEcho("height buffer written to map")
 end
 
 function Renderer:HeightImageInit()
-  OpenFile("height", "pgm")
-  WriteFile("P5 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " " .. 65535 .. " ")
+  FWriteOpen("height", "pgm")
+  FWrite("P5 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " " .. 65535 .. " ")
 end
 
 function Renderer:HeightImageFrame()
-  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pixelsThisFrame = mMin(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
   local heightBuf = self.heightBuf
   local heightDif = (heightBuf.maxHeight - heightBuf.minHeight)
   for p = pMin, pMax do
     local x = (p % self.mapRuler.width) + 1
-    local y = self.mapRuler.height - math.floor(p / self.mapRuler.width) --pgm goes backwards y?
+    local y = self.mapRuler.height - mFloor(p / self.mapRuler.width) --pgm goes backwards y?
     local pixelHeight = heightBuf:Get(x, y) or self.world.baselevel
-    local pixelColor = math.floor(((pixelHeight - heightBuf.minHeight) / heightDif) * 65535)
+    local pixelColor = mFloor(((pixelHeight - heightBuf.minHeight) / heightDif) * 65535)
     local twochars = uint16big(pixelColor)
-    WriteFile(twochars)
+    FWrite(twochars)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
   return pixelsThisFrame + 1
 end
 
 function Renderer:HeightImageFinish()
-  CloseFile()
-  Spring.Echo("height File sent")
-  OpenFile("heightrange", "txt", "w")
-  WriteFile(
+  FWriteClose()
+  spEcho("height File sent")
+  FWriteOpen("heightrange", "txt", "w")
+  FWrite(
     "min: " .. self.heightBuf.minHeight .. "\n\r" ..
     "max: " .. self.heightBuf.maxHeight .. "\n\r" ..
     "range: " .. (self.heightBuf.maxHeight - self.heightBuf.minHeight))
-  CloseFile()
+  FWriteClose()
 end
 
 function Renderer:HeightBlurInit()
-  self.sradius = math.ceil(self.radius * 2.57)
+  self.sradius = mCeil(self.radius * 2.57)
   local radiusTwoSq = self.radius * self.radius * 2
   local radiusTwoSqPi = radiusTwoSq * pi
   self.weights = {}
@@ -1090,7 +1130,7 @@ function Renderer:HeightBlurInit()
     self.weights[dx] = {}
     for dy = -self.sradius, self.sradius do
       local distSq = (dx*dx) + (dy*dy)
-      local weight = math.exp(-distSq / radiusTwoSq) / radiusTwoSqPi
+      local weight = mExp(-distSq / radiusTwoSq) / radiusTwoSqPi
       self.weights[dx][dy] = weight
     end
   end
@@ -1099,12 +1139,12 @@ end
 
 function Renderer:HeightBlurFrame()
   local heightBuf = self.heightBuf
-  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pixelsThisFrame = mMin(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
   for p = pMin, pMax do
     local x = (p % self.mapRuler.width) + 1
-    local y = math.floor(p / self.mapRuler.width) + 1
+    local y = mFloor(p / self.mapRuler.width) + 1
     local center = heightBuf:Get(x, y)
     local totalWeight = 0
     local totalHeight = 0
@@ -1152,34 +1192,34 @@ function Renderer:HeightBlurFinish()
 end
 
 function Renderer:AttributesInit()
-  OpenFile("attrib", "pbm")
-  WriteFile("P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
+  FWriteOpen("attrib", "pbm")
+  FWrite("P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
 end
 
 function Renderer:AttributesFrame()
-  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pixelsThisFrame = mMin(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
   for p = pMin, pMax do
     local x = (p % self.mapRuler.width) + 1
-    local y = self.mapRuler.height - math.floor(p / self.mapRuler.width) -- pgm is backwards y?
-    -- if p < 2000 then Spring.Echo(p, x, y) end
+    local y = self.mapRuler.height - mFloor(p / self.mapRuler.width) -- pgm is backwards y?
+    -- if p < 2000 then spEcho(p, x, y) end
     local attribute = 0
     for i, c in ipairs(self.craters) do
       local a = c:AttributePixel(x, y)
       if a ~= 0 and not (a == 5 and (attribute == 1 or attribute == 4 or attribute == 6 or attribute == 2)) then attribute = a end
     end
-    -- local aRGB = {math.floor((x / self.world.renderWidth) * 255), math.floor((y / self.world.renderHeight) * 255), math.floor((p / self.world.totalPixels) * 255)}
+    -- local aRGB = {mFloor((x / self.world.renderWidth) * 255), mFloor((y / self.world.renderHeight) * 255), mFloor((p / self.world.totalPixels) * 255)}
     local threechars = AttributeDict[attribute].threechars
-    WriteFile(threechars)
+    FWrite(threechars)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
   return pixelsThisFrame + 1
 end
 
 function Renderer:AttributesFinish()
-  CloseFile()
-  Spring.Echo("attribute File sent")
+  FWriteClose()
+  spEcho("attribute File sent")
 end
 
 function Renderer:MetalPreinit()
@@ -1187,67 +1227,67 @@ function Renderer:MetalPreinit()
   for i, meteor in pairs(self.world.meteors) do
     if meteor.metal then
       local spot = { x = meteor.sx, z = meteor.sz, metal = self.world.metalSpotAmount }
-      table.insert(self.metalSpots, spot)
+      tInsert(self.metalSpots, spot)
     end
   end
-  Spring.Echo(#self.metalSpots .. " metal spots")
+  spEcho(#self.metalSpots .. " metal spots")
 end
 
 function Renderer:MetalInit()
-  OpenFile("metal", "lua", "w")
-  WriteFile("return {\n\tspots = {\n")
+  FWriteOpen("metal", "lua", "w")
+  FWrite("return {\n\tspots = {\n")
   ClearMetalMap()
   for i, spot in pairs(self.metalSpots) do
-    WriteFile("\t\t{x = " .. spot.x .. ", z = " .. spot.z .. ", metal = " .. spot.metal .. "},\n")
+    FWrite("\t\t{x = " .. spot.x .. ", z = " .. spot.z .. ", metal = " .. spot.metal .. "},\n")
     WriteMetalSpot(spot)
   end
-  WriteFile("\t}\n}")
-  CloseFile()
-  Spring.Echo("wrote metal to map and config lua")
-  OpenFile("metal", "pbm")
-  WriteFile("P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
+  FWrite("\t}\n}")
+  FWriteClose()
+  spEcho("wrote metal to map and config lua")
+  FWriteOpen("metal", "pbm")
+  FWrite("P6 " .. tostring(self.mapRuler.width) .. " " .. tostring(self.mapRuler.height) .. " 255 ")
   self.zeroTwoChars = string.char(0) .. string.char(0)
   self.blackThreeChars = string.char(0) .. string.char(0) .. string.char(0)
 end
 
 function Renderer:MetalFrame()
-  local pixelsThisFrame = math.min(self.pixelsPerFrame, self.pixelsToRenderCount)
+  local pixelsThisFrame = mMin(self.pixelsPerFrame, self.pixelsToRenderCount)
   local pMin = self.totalPixels - self.pixelsToRenderCount
   local pMax = pMin + pixelsThisFrame
   for p = pMin, pMax do
     local x = (p % self.mapRuler.width) + 1
-    local y = self.mapRuler.height - math.floor(p / self.mapRuler.width) -- pgm is backwards y?
+    local y = self.mapRuler.height - mFloor(p / self.mapRuler.width) -- pgm is backwards y?
     local threechars = self.blackThreeChars
     local sx, sz = self.mapRuler:XYtoXZ(x, y)
-    local mx, mz = math.ceil(sx/16)-1, math.ceil(sz/16)-1
-    local mAmount = Spring.GetMetalAmount(mx, mz)
+    local mx, mz = mCeil(sx/16)-1, mCeil(sz/16)-1
+    local mAmount = spGetMetalAmount(mx, mz)
     if mAmount > 0 then
       -- assumes maxmetal is 1.0
       -- if i knew how to get the map's maxmetal, i would
       threechars = string.char(mAmount) .. self.zeroTwoChars
     end
-    WriteFile(threechars)
+    FWrite(threechars)
   end
   self.pixelsToRenderCount = self.pixelsToRenderCount - pixelsThisFrame - 1
   return pixelsThisFrame + 1
 end
 
 function Renderer:MetalFinish()
-  CloseFile()
-  Spring.Echo("metal File sent")
+  FWriteClose()
+  spEcho("metal File sent")
 end
 
 --------------------------------------
 
 function Crater:GetDistanceSq(x, y)
-  local dx, dy = math.abs(x-self.x), math.abs(y-self.y)
+  local dx, dy = mAbs(x-self.x), mAbs(y-self.y)
   diffDistancesSq[dx] = diffDistancesSq[dx] or {}
   diffDistancesSq[dx][dy] = diffDistancesSq[dx][dy] or ((dx*dx) + (dy*dy))
   return diffDistancesSq[dx][dy]
 end
 
 function Crater:GetDistance(x, y)
-  local dx, dy = math.abs(x-self.x), math.abs(y-self.y)
+  local dx, dy = mAbs(x-self.x), mAbs(y-self.y)
   diffDistances[dx] = diffDistances[dx] or {}
   if not diffDistances[dx][dy] then
     local distSq = self:GetDistanceSq(x, y)
@@ -1264,6 +1304,29 @@ function Crater:HeightPixel(x, y)
   local realDistSq = self:GetDistanceSq(x, y)
   -- local realRimRatio = realDistSq / radiusSq
   local distSq = realDistSq * distWobbly
+  if self.terraces then
+    for i, t in ipairs(self.terraces) do
+      local here = t.max - t.noise:Radial(angle)
+      if distSq <= here then
+        local below, belowMax
+        if self.terraces[i-1] then
+          below = self.terraces[i-1].max - self.terraces[i-1].noise:Radial(angle)
+          belowMax = self.terraces[i-1].max
+        else
+          below = self.terraceMin
+          belowMax = self.terraceMin
+        end
+        if distSq >= below then
+          local ratio = mSmoothstep(below, here, distSq)
+          distSq = mMix(belowMax, t.max, ratio)
+          break
+        end
+      elseif i == #self.terraces and distSq > here and distSq < self.radiusSq then
+        local ratio = mSmoothstep(here, self.radiusSq, distSq)
+        distSq = mMix(t.max, self.radiusSq, ratio)
+      end
+    end
+  end
   local rimRatio = distSq / self.radiusSq
   local heightWobbly = (meteor.heightNoise:Radial(angle) * rimRatio) + 1
   local height = 0
@@ -1273,8 +1336,8 @@ function Crater:HeightPixel(x, y)
   local add = false
   if distSq <= self.radiusSq then
     if meteor.age > 0 then
-      local smooth = math.smoothstep(0, 1, rimRatio)
-      rimRatioPower = math.mix(rimRatioPower, smooth, meteor.ageRatio)
+      local smooth = mSmoothstep(0, 1, rimRatio)
+      rimRatioPower = mMix(rimRatioPower, smooth, meteor.ageRatio)
     end
     height = rimHeight - ((1 - rimRatioPower)*meteor.craterDepth)
     if meteor.complex then
@@ -1282,8 +1345,8 @@ function Crater:HeightPixel(x, y)
         local distSqPeakWobbled = distSq * (1+meteor.peakRadialNoise:Radial(angle))
         if distSqPeakWobbled < self.peakRadiusSq then
           local peakRatio = 1 - (distSqPeakWobbled / self.peakRadiusSq)
-          peakRatio = math.smoothstep(0, 1, peakRatio)
-          local px, py = math.floor(dx+self.peakNoise.halfSideLength+3), math.floor(dy+self.peakNoise.halfSideLength+3)
+          peakRatio = mSmoothstep(0, 1, peakRatio)
+          local px, py = mFloor(dx+self.peakNoise.halfSideLength+3), mFloor(dy+self.peakNoise.halfSideLength+3)
           local peak = self.peakNoise:Get(px, py) * peakRatio
           height = height + peak
         end
@@ -1293,7 +1356,7 @@ function Crater:HeightPixel(x, y)
       local rayWobbly = meteor.rayNoise:Radial(angle) + 1
       local rayWidth = meteor.rayWidth * rayWobbly
       local rayWidthMult = twicePi / rayWidth
-      local rayHeight = math.max(math.sin(rayWidthMult * angle) - 0.75, 0) * meteor.rayHeight * heightWobbly * rimRatio
+      local rayHeight = mMax(math.sin(rayWidthMult * angle) - 0.75, 0) * meteor.rayHeight * heightWobbly * rimRatio
       height = height - rayHeight
     end
   else
@@ -1302,16 +1365,16 @@ function Crater:HeightPixel(x, y)
     local fallDistSq = distSq - self.radiusSq
     if fallDistSq <= self.falloffSq then
       local gaussDecay = Gaussian(fallDistSq, self.falloffSqFourth)
-      -- local gaussDecay = 1 - math.smoothstep(0, self.falloffSq, fallDistSq)
-      -- local linearToHalfGrowth = math.min(fallDistSq / self.falloffSqFourth, 1)
+      -- local gaussDecay = 1 - mSmoothstep(0, self.falloffSq, fallDistSq)
+      -- local linearToHalfGrowth = mMin(fallDistSq / self.falloffSqFourth, 1)
       -- local linearToHalfDecay = 1 - linearToHalfGrowth
-      local linearGrowth = math.min(fallDistSq / self.falloffSq, 1)
+      local linearGrowth = mMin(fallDistSq / self.falloffSq, 1)
       local linearDecay = 1 - linearGrowth
       local secondDecay = 1 - (linearGrowth^0.5)
       alpha = (gaussDecay * linearGrowth) + (secondDecay * linearDecay)
       if meteor.age > 0 then
-        local smooth = math.smoothstep(0, 1, linearDecay)
-        alpha = math.mix(alpha, smooth, meteor.ageRatio)
+        local smooth = mSmoothstep(0, 1, linearDecay)
+        alpha = mMix(alpha, smooth, meteor.ageRatio)
       end
       -- height = diameterTransientFourth / (112 * (fallDistSq^1.5))
     else
@@ -1324,7 +1387,7 @@ end
 function Crater:OneHeightPixel()
   local p = self.currentPixel
   local x = (p % self.width) + self.xmin
-  local y = math.floor(p / self.width) + self.ymin
+  local y = mFloor(p / self.width) + self.ymin
   self.currentPixel = self.currentPixel + 1
   local height, alpha, add = self:HeightPixel(x, y)
   return x, y, height, alpha, add
@@ -1354,8 +1417,8 @@ function Crater:AttributePixel(x, y)
         local distSqPeakWobbled = distSq * (1+meteor.peakRadialNoise:Radial(angle))
         if distSqPeakWobbled < self.peakRadiusSq then
           local peakRatio = 1 - (distSqPeakWobbled / self.peakRadiusSq)
-          peakRatio = math.smoothstep(0, 1, peakRatio)
-          local px, py = math.floor(dx+self.peakNoise.halfSideLength+3), math.floor(dy+self.peakNoise.halfSideLength+3)
+          peakRatio = mSmoothstep(0, 1, peakRatio)
+          local px, py = mFloor(dx+self.peakNoise.halfSideLength+3), mFloor(dy+self.peakNoise.halfSideLength+3)
           local peak = self.peakNoise:Get(px, py) * peakRatio
           if peak > 0 then return 2 end
         end
@@ -1367,7 +1430,7 @@ function Crater:AttributePixel(x, y)
       local rayWobbly = meteor.rayNoise:Radial(angle) + 1
       local rayWidth = meteor.rayWidth * rayWobbly
       local rayWidthMult = twicePi / rayWidth
-      local rayHeight = math.max(math.sin(rayWidthMult * angle) - 0.75, 0) * heightWobbly * rimRatio
+      local rayHeight = mMax(math.sin(rayWidthMult * angle) - 0.75, 0) * heightWobbly * rimRatio
       if rayHeight > 0.1 then return 6 end
     end
     return 1
@@ -1376,21 +1439,21 @@ function Crater:AttributePixel(x, y)
     local fallDistSq = distSq - self.radiusSq
     if fallDistSq <= self.falloffSq then
       local gaussDecay = Gaussian(fallDistSq, self.falloffSqFourth)
-      -- local gaussDecay = 1 - math.smoothstep(0, self.falloffSq, fallDistSq)
-      -- local linearToHalfGrowth = math.min(fallDistSq / self.falloffSqFourth, 1)
+      -- local gaussDecay = 1 - mSmoothstep(0, self.falloffSq, fallDistSq)
+      -- local linearToHalfGrowth = mMin(fallDistSq / self.falloffSqFourth, 1)
       -- local linearToHalfDecay = 1 - linearToHalfGrowth
-      local linearGrowth = math.min(fallDistSq / self.falloffSq, 1)
+      local linearGrowth = mMin(fallDistSq / self.falloffSq, 1)
       local linearDecay = 1 - linearGrowth
       local secondDecay = 1 - (linearGrowth^0.5)
       alpha = (gaussDecay * linearGrowth) + (secondDecay * linearDecay)
       -- height = diameterTransientFourth / (112 * (fallDistSq^1.5))
-      if math.random() < alpha then return 3 end
+      if mRandom() < alpha then return 3 end
     end
     if meteor.age < 10 then
       local blastWobbly = meteor.blastNoise:Radial(angle) + 0.5
       local blastRadiusSqWobbled = self.blastRadiusSq * blastWobbly
       local blastRatio = (distSq / blastRadiusSqWobbled)
-      if math.random() * math.max(1-(meteor.ageRatio*10), 0) > blastRatio then return 5 end
+      if mRandom() * mMax(1-(meteor.ageRatio*10), 0) > blastRatio then return 5 end
     end
   end
   return 0
@@ -1404,6 +1467,10 @@ function Crater:GiveStartingHeight()
 end
 
 --------------------------------------
+
+function Meteor:Pass()
+  SendToUnsynced("Meteor", self.sx, self.sz, self.diameterImpactor, self.velocityImpactKm, self.angleImpact, self.densityImpactor, self.age, self.craterRadius)
+end
 
 function Meteor:BuildNoise()
   for k, v in pairs(self) do
@@ -1425,15 +1492,15 @@ function WrapNoise:Regenerate()
 end
 
 function WrapNoise:Smooth(n)
-  local n1 = math.floor(n)
-  local n2 = math.ceil(n)
+  local n1 = mFloor(n)
+  local n2 = mCeil(n)
   if n1 == n2 then return self:Output(n1) end
   local val1, val2 = self:Output(n1), self:Output(n2)
   local d = val2 - val1
   if n2 < n1 then
-    -- Spring.Echo(n, n1, n2, self.length)
+    -- spEcho(n, n1, n2, self.length)
   end
-  return val1 + (math.smoothstep(n1, n2, n) * d)
+  return val1 + (mSmoothstep(n1, n2, n) * d)
 end
 
 function WrapNoise:Rational(ratio)
@@ -1450,7 +1517,7 @@ function WrapNoise:Output(n)
 end
 
 function WrapNoise:Dist(n1, n2)
-  return math.abs((n1 + self.halfLength - n2) % self.length - self.halfLength)
+  return mAbs((n1 + self.halfLength - n2) % self.length - self.halfLength)
 end
 
 function WrapNoise:Clamp(n)
@@ -1469,7 +1536,7 @@ function TwoDimensionalNoise:Regenerate()
 end
 
 function TwoDimensionalNoise:Get(x, y)
-  x, y = math.floor(x), math.floor(y)
+  x, y = mFloor(x), mFloor(y)
   if self.xy then
     if not self.xy[x] then return 0 end
     if not self.xy[x][y] then return 0 end
@@ -1487,11 +1554,9 @@ end
 if gadgetHandler:IsSyncedCode() then -- BEGIN SYNCED -------------------------
 
 function gadget:Initialize()
-  SendToUnsynced("ClearMeteors")
   heightMapRuler = MapRuler(nil, (Game.mapSizeX / Game.squareSize) + 1, (Game.mapSizeZ / Game.squareSize) + 1)
   metalMapRuler = MapRuler(16, (Game.mapSizeX / 16), (Game.mapSizeZ / 16))
   myWorld = World(2.32, 1000)
-  SendToUnsynced("BypassSpring", tostring(bypassSpring))
   -- myWorld = World(3, 1000)
 end
 
@@ -1528,28 +1593,28 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld:RenderMetal(uiCommand)
     elseif commandWord == "bypasstoggle" then
       bypassSpring = not bypassSpring
-      Spring.Echo("bypassSpring is now", tostring(bypassSpring))
+      spEcho("bypassSpring is now", tostring(bypassSpring))
       SendToUnsynced("BypassSpring", tostring(bypassSpring))
       myWorld:RenderHeightSpring(uiCommand)
     elseif commandWord == "underlyingmaretoggle" then
       yesMare = not yesMare
-      Spring.Echo("yesMare is now", tostring(yesMare))
+      spEcho("yesMare is now", tostring(yesMare))
     elseif commandWord == "mirror" then
       myWorld.mirror = words[3]
-      Spring.Echo("mirror: " .. myWorld.mirror)
+      spEcho("mirror: " .. myWorld.mirror)
     elseif commandWord == "mirrornext" then
       local mt = MirrorNames[myWorld.mirror]+1
       if mt == #MirrorTypes+1 then mt = 1 end
       myWorld.mirror = MirrorTypes[mt]
-      Spring.Echo("mirror: " .. myWorld.mirror)
+      spEcho("mirror: " .. myWorld.mirror)
     elseif commandWord == "save" then
       myWorld:Save(words[3])
     elseif commandWord == "load" then
-      ReadFile("world" .. (words[3] or ""), "lua", function(str) myWorld:Load(str) end)
+      FReadOpen("world" .. (words[3] or ""), "lua", function(str) myWorld:Load(str) end)
     elseif commandWord == "fileline" then
-      ReadLine(uiCommand:sub(10))
+      FReadLine(uiCommand:sub(10))
     elseif commandWord == "fileend" then
-      ReadEnd()
+      FReadClose()
     elseif commandWord == "renderall" then
       myWorld:RenderMetal()
       myWorld:RenderAttributes()
@@ -1563,9 +1628,15 @@ function gadget:GameFrame(frame)
   if renderer then
     renderer:Frame()
     if renderer.complete then
-      -- Spring.Echo(renderer.renderType, "complete", #myWorld.renderers)
-      table.remove(myWorld.renderers, 1)
+      -- spEcho(renderer.renderType, "complete", #myWorld.renderers)
+      tRemove(myWorld.renderers, 1)
     end
+  end
+  if not gadgetInitialized then 
+    -- can't happen in gadget:Initialize() because the sync actions haven't been added yet
+    SendToUnsynced("ClearMeteors")
+    SendToUnsynced("BypassSpring", tostring(bypassSpring))
+    gadgetInitialized = true
   end
 end
 
@@ -1591,8 +1662,8 @@ local function ReadFileToLuaUI(_, name, ext)
   Script.LuaUI.ReceiveReadFile(name, ext)
 end
 
-local function MeteorToLuaUI(_, sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
-  Script.LuaUI.ReceiveMeteor(sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age)
+local function MeteorToLuaUI(_, sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age, craterRadius)
+  Script.LuaUI.ReceiveMeteor(sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age, craterRadius)
 end
 
 local function BypassSpringToLuaUI(_, stateString)
