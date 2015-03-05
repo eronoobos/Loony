@@ -1,8 +1,8 @@
-- add geovents
 - scale peak noise with crater size
 	- needed: 2d smooth function
-- attribute interactions: the ejecta & breccia should be made of underlying material, so if an impact happens in the middle of a giant melt for instance, it doesn't weirdly make itself lighter than its surroundings. that would require an attribute map stored in memory like the height map.
-- change distance squared to distance?
-- still slightly confused about how overlapping crater interactions should resolve
 - optional base perlin noise
 - interface for moving & editing meteors
+- change distance squared to distance?
+- attribute interactions: the ejecta & breccia should be made of underlying material, so if an impact happens in the middle of a giant melt for instance, it doesn't weirdly make itself lighter than its surroundings. that would require an attribute map stored in memory like the height map.
+- still slightly confused about how overlapping crater interactions should resolve
+- render attribute map and another heightmap at L3DT-usable size (i.e., w/o the extra pixel on each end as in spring's heightmap, and possibly twice the resolution)

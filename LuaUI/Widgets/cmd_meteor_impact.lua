@@ -15,8 +15,11 @@ local timers = {}
 local meteor
 local currentFile
 local currentFilename
+local currentReadFilename
+local currentReadFile
+local readLinesPerFrame = 1
 local currentMeteors = {}
-local bypassSpring = false
+local bypassSpring = true
 local renderType, renderProgress, renderTotal, renderRatio, renderBgRect, renderFgRect, renderRGB
 local renderRatioRect = { x1 = 0.25, y1 = 0.49, x2 = 0.75, y2 = 0.51 }
 local renderBgRGB = { r = 0, g = 0, b = 0.5, a = 0.5 }
@@ -107,20 +110,13 @@ end
 local function ReceiveReadFile(name, ext)
 	name = name or ""
 	ext = ext or "txt"
-	local filename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. "." .. ext)
-	Spring.Echo("reading from " .. filename)
-	local file = assert(io.open(filename,"r"), "Unable to read from "..filename)
-	while true do
-		local line = file:read()
-		if not line then break end
-    -- for line in io.lines() do
-      Spring.SendLuaGaiaMsg("loony fileline " .. line)
-    end
-    Spring.SendLuaGaiaMsg("loony fileend")
+	currentReadFilename = (string.lower(string.gsub(Game.mapName, ".smf", "_")) .. name .. "." .. ext)
+	Spring.Echo("reading from " .. currentReadFilename)
+	currentReadFile = assert(io.open(currentReadFilename,"r"), "Unable to read from "..currentReadFilename)
 end
 
-local function ReceiveMeteor(sx, sz, diameterImpactor, velocityImpact, angleImpact, densityImpactor, age, craterRadius)
-	local m = { x = sx, z = sz, diameterImpactor = diameterImpactor, velocityImpact = velocityImpact, angleImpact = angleImpact, densityImpactor = densityImpactor, age = age, craterRadius = craterRadius, y = Spring.GetGroundHeight(sx, sz) }
+local function ReceiveMeteor(sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age, craterRadius, metal, geothermal)
+	local m = { x = sx, z = sz, diameterImpactor = diameterImpactor, velocityImpactKm = velocityImpactKm, angleImpact = angleImpact, densityImpactor = densityImpactor, age = age, craterRadius = craterRadius, metal = metal, geothermal = geothermal, y = Spring.GetGroundHeight(sx, sz), rgb = { 0, 1-(age/100), age/100 } }
 	table.insert(currentMeteors, m)
 end
 
@@ -208,6 +204,23 @@ function widget:KeyRelease(key)
 	end
 end
 
+function widget:GameFrame(frame)
+	if currentReadFilename then
+		for i = 1, readLinesPerFrame do
+			local line = currentReadFile:read()
+			if line then
+		    	Spring.SendLuaGaiaMsg("loony fileline " .. line)
+			else
+				currentReadFile:close()
+				Spring.SendLuaGaiaMsg("loony fileend")
+				currentReadFile = nil
+				currentReadFilename = nil
+				break
+			end
+		end
+	end
+end
+
 function widget:Update()
 	if meteor then
 		local x, y, z = GetMouseGroundPosition()
@@ -228,10 +241,20 @@ function widget:DrawWorld()
 		gl.DrawGroundCircle(meteor.x, meteor.y, meteor.z, meteor.radius, 8)
 	end
 	if #currentMeteors > 0 and bypassSpring then
-		gl.LineWidth(1)
-		gl.Color(0, 1, 0, 1)
 		for i, m in pairs(currentMeteors) do
+			gl.LineWidth(2)
+			gl.Color(m.rgb[1], m.rgb[2], m.rgb[3], 1)
 			gl.DrawGroundCircle(m.x, m.y, m.z, m.craterRadius, 8)
+			if m.metal then
+				gl.Color(0, 1, 1)
+				gl.LineWidth(8)
+				gl.DrawGroundCircle(m.x, m.y, m.z, 8, 4)
+			end
+			if m.geothermal then
+				gl.Color(1, 1, 0)
+				gl.LineWidth(8)
+				gl.DrawGroundCircle(m.x, m.y, m.z, 32, 3)
+			end
 		end
 	end
 	gl.LineWidth(1)
