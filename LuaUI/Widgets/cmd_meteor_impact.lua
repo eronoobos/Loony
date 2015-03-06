@@ -206,10 +206,12 @@ end
 
 function widget:GameFrame(frame)
 	if currentReadFilename then
+		local packet = ""
 		for i = 1, readLinesPerFrame do
 			local line = currentReadFile:read()
 			if line then
-		    	Spring.SendLuaGaiaMsg("loony fileline " .. line)
+				packet = packet .. line
+				if i ~= readLinesPerFrame then packet = packet .. "\n" end
 			else
 				currentReadFile:close()
 				Spring.SendLuaGaiaMsg("loony fileend")
@@ -218,6 +220,7 @@ function widget:GameFrame(frame)
 				break
 			end
 		end
+		Spring.SendLuaGaiaMsg("loony fileline " .. packet)
 	end
 end
 

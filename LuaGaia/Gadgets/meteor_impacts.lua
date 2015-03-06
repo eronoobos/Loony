@@ -54,7 +54,8 @@ local spGetGroundHeight = Spring.GetGroundHeight
 
 local bypassSpring = true -- if false, automatically write to spring's height map
 local yesMare = false -- send huge melt-floor-generating meteors before a shower?
-local fileMaxPacketLength = 1024 -- how many bytes to accumulate in the fileBuffer before sending to unsynced
+local fileMaxPacketLength = 1024 -- how many bytes to accumulate in the writeBuffer before sending to unsynced
+local doNotStore = false
 
 -- local variables:
 
@@ -67,7 +68,7 @@ local diffDistancesSq = {}
 local sqrts = {}
 local gaussians = {}
 local angles = {}
-local fileBuffer = ""
+local writeBuffer = ""
 local readBuffer = ""
 local readEndFunc
 
@@ -83,6 +84,18 @@ local AttributeDict = {
   [6] = { name = "Ray", rgb = {255,255,255} },
   [7] = { name = "Metal", rgb = {255,0,255} },
   [8] = { name = "Geothermal", rgb = {255,255,0} },
+}
+
+local AttributeOverlapExclusions = {
+  [0] = {},
+  [1] = {[7] = true, [8] = true},
+  [2] = {[7] = true, [8] = true},
+  [3] = {[7] = true, [8] = true},
+  [4] = {[7] = true, [8] = true},
+  [5] = {[1] = true, [2] = true, [4] = true, [6] = true, [7] = true, [8] = true},
+  [6] = {[7] = true, [8] = true},
+  [7] = {},
+  [8] = {},
 }
 
 local AttributesByName = {}
@@ -123,7 +136,6 @@ local WorldSaveBlackList = {
   "world",
   "values",
   "outValues",
-  "valuesByAngle",
   "renderers",
   "heightBuf",
 }
@@ -174,7 +186,7 @@ local function FReadClose()
 end
 
 local function FWriteOpen(name, ext, mode)
-  fileBuffer = ""
+  writeBuffer = ""
   SendToUnsynced("BeginFile", name, ext, mode)
 end
 
@@ -183,17 +195,17 @@ local function FWrite(...)
   for i, str in ipairs({...}) do
     send = send .. str
   end
-  fileBuffer = fileBuffer .. send
-  if fileBuffer:len() >= fileMaxPacketLength then
-    SendToUnsynced("PieceFile", fileBuffer)
-    fileBuffer = ""
+  writeBuffer = writeBuffer .. send
+  if writeBuffer:len() >= fileMaxPacketLength then
+    SendToUnsynced("PieceFile", writeBuffer)
+    writeBuffer = ""
   end
 end
 
 local function FWriteClose()
-  if fileBuffer:len() > 0 then SendToUnsynced("PieceFile", fileBuffer) end
+  if writeBuffer:len() > 0 then SendToUnsynced("PieceFile", writeBuffer) end
   SendToUnsynced("EndFile")
-  fileBuffer = ""
+  writeBuffer = ""
 end
 
 local function serialize(o)
@@ -222,6 +234,7 @@ local function serialize(o)
 end
 
 local function sqrt(number)
+  if doNotStore then return mSqrt(number) end
   sqrts[number] = sqrts[number] or mSqrt(number)
   return sqrts[number]
 end
@@ -240,6 +253,7 @@ local function VaryWithinBounds(value, variance, minimum, maximum)
 end
 
 local function AngleDXDY(dx, dy)
+  if doNotStore then return mAtan2(dy, dx) end
   angles[dx] = angles[dx] or {}
   angles[dx][dy] = angles[dx][dy] or mAtan2(dy, dx)
   return angles[dx][dy]
@@ -271,6 +285,7 @@ local function splitIntoWords(s)
 end
 
 local function Gaussian(x, c)
+  if doNotStore then return mExp(  -( (x^2) / (2*(c^2)) )  ) end
   gaussians[x] = gaussians[x] or {}
   gaussians[x][c] = gaussians[x][c] or mExp(  -( (x^2) / (2*(c^2)) )  )
   return gaussians[x][c]
@@ -341,6 +356,14 @@ local function WriteMetalSpot(spot)
     end
 end
 
+local function ClearSpeedupStorage()
+  diffDistances = {}
+  diffDistancesSq = {}
+  sqrts = {}
+  gaussians = {}
+  angles = {}
+end
+
 ------------------------------------------------------------------------------
 
 -- Compatible with Lua 5.1 (not 5.0).
@@ -406,14 +429,13 @@ World = class(function(a, metersPerElmo, baselevel, gravity, density, mirror)
   a.complexDepthScaleFactor = ((a.gravity / 1.6) + 1) / 2
   a.mirror = mirror or "none"
   a.minMetalMeteorDiameter = 2
-  a.maxMetalMeteorDiameter = 40
-  a.metalMeteorProbability = 0.25
+  a.maxMetalMeteorDiameter = 50
+  a.metalMeteorTarget = 20
   a.metalSpotAmount = 2.0
   a.metalRadius = 50 -- elmos, for the attribute map
-  a.minGeothermalMeteorDiameter = 15
-  a.maxGeothermalMeteorDiameter = 80
-  a.geothermalMeteorProbability = 0.1
-  a.geothermalMeteorMax = 4
+  a.minGeothermalMeteorDiameter = 20
+  a.maxGeothermalMeteorDiameter = 100
+  a.geothermalMeteorTarget = 4
   a.geothermalRadius = 30 -- elmos, for the attribute map
   a.metalAttribute = true -- draw metal spots on the attribute map?
   a.geothermalAttribute = true -- draw geothermal vents on the attribute map?
@@ -540,9 +562,6 @@ Crater = class(function(a, meteor, renderer)
   a.height = a.ymax - a.ymin + 1
   a.area = a.width * a.height
   a.currentPixel = 0
-  -- a.ageNoise = TwoDimensionalNoise(a.width, meteor.ageRatio, a.width)
-  -- perlin2D(seed, width, height, persistence, N, amplitude)
-  -- a.ageNoise = perlin2D(a.radius+a.x+a.y, a.width+1, a.height+1, 0.25, 6, 0.5)
 end)
 
 -- Meteor stores data and does meteor impact model calculations
@@ -565,7 +584,7 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
     a.geothermal = geothermal == "true"
   else
     if a.diameterImpactor > world.minGeothermalMeteorDiameter and a.diameterImpactor < world.maxGeothermalMeteorDiameter then
-      if mRandom() < world.geothermalMeteorProbability then a.geothermal = true end
+      if world.geothermalMeteorCount < world.geothermalMeteorTarget then a.geothermal = true end
     end
   end
   if not a.geothermal then
@@ -573,12 +592,18 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
       a.metal = metal == "true"
     else
       if a.diameterImpactor > world.minMetalMeteorDiameter and a.diameterImpactor < world.maxMetalMeteorDiameter then
-        if mRandom() < world.metalMeteorProbability then a.metal = true end
+        if world.metalMeteorCount < world.metalMeteorTarget then a.metal = true end
       end
     end
   end
-  if a.metal then a.metalSeed = NewSeed() end
-  if a.geothermal then a.geothermalSeed = NewSeed() end
+  if a.metal then
+    a.metalSeed = NewSeed()
+    world.metalMeteorCount = world.metalMeteorCount + 1
+  end
+  if a.geothermal then
+    world.geothermalMeteorCount = world.geothermalMeteorCount + 1
+    a.geothermalSeed = NewSeed()
+  end
 
   a.velocityImpact = a.velocityImpactKm * 1000
   a.angleImpactRadians = a.angleImpact * radiansPerAngle
@@ -625,7 +650,7 @@ Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, an
     a.craterRadius = (a.diameterComplex / 2) / world.metersPerElmo
     a.craterMeltThickness = a.meltThickness / world.metersPerElmo
     a.meltSurface = a.craterRimHeight + a.craterMeltThickness - a.craterDepth
-    spEcho(a.energyImpact, a.meltVolume, a.meltThickness)
+    -- spEcho(a.energyImpact, a.meltVolume, a.meltThickness)
     a.craterPeakHeight = a.craterDepth * 0.5
     a.peakRadialSeed = NewSeed()
     a.peakRadialNoise = WrapNoise(16, 0.75, a.peakRadialSeed)
@@ -654,7 +679,7 @@ end)
 
 WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude)
   a.noiseType = "Wrap"
-  a.values = {}
+  local values = {}
   a.outValues = {}
   a.absMaxValue = 0
   a.angleDivisor = twicePi / length
@@ -674,17 +699,15 @@ WrapNoise = class(function(a, length, intensity, seed, persistence, N, amplitude
   local yx = perlin2D( seed, diameter+1, diameter+1, persistence, N, amplitude )
   local i = 1
   local angleIncrement = twicePi / length
-  a.valuesByAngle = {}
   for angle = -pi, pi, angleIncrement do
     local x = mFloor(radius + (radius * math.cos(angle))) + 1
     local y = mFloor(radius + (radius * math.sin(angle))) + 1
     local val = yx[y][x]
     if mAbs(val) > a.absMaxValue then a.absMaxValue = mAbs(val) end
-    a.values[i] = val
-    a.valuesByAngle[angle] = val
+    values[i] = val
     i = i + 1
   end
-  for n, v in ipairs(a.values) do
+  for n, v in ipairs(values) do
     a.outValues[n] = (v / a.absMaxValue) * a.intensity
   end
 end)
@@ -728,6 +751,7 @@ TwoDimensionalNoise = class(function(a, seed, sideLength, intensity, persistence
         a.xy[x][y] = nv * a.intensity
       end
     end
+    a.yx = nil
   end
 end)
 
@@ -739,6 +763,8 @@ function World:Clear()
   self.heightBuf = HeightBuffer(self, heightMapRuler)
   self.meteors = {}
   self.renderers = {}
+  self.metalMeteorCount = 0
+  self.geothermalMeteorCount = 0
   SendToUnsynced("ClearMeteors")
   SendToUnsynced("RenderStatus", "none")
   if not bypassSpring then
@@ -755,6 +781,7 @@ function World:Save(name)
 end
 
 function World:Load(luaStr)
+  self:Clear()
   local loadWorld = loadstring(luaStr)
   local newWorld = loadWorld()
   for k, v in pairs(newWorld) do
@@ -805,6 +832,7 @@ function World:MeteorShower(number, minDiameter, maxDiameter, minVelocity, maxVe
     local z = mFloor(mRandom() * Game.mapSizeZ)
     self:AddMeteor(x, z, diameter, velocity, angle, density, mFloor((number-n)*hundredConv))
   end
+  spEcho(self.metalMeteorCount, self.geothermalMeteorCount)
 end
 
 function World:AddMeteor(sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age, metal, geothermal, doNotMirror)
@@ -840,9 +868,20 @@ function World:RenderHeightSpring(uiCommand)
   tInsert(self.renderers, Renderer(self, heightMapRuler, 6000, "HeightSpring", uiCommand, self.heightBuf, true))
 end
 
-function World:RenderAttributes(uiCommand)
-  local renderer = Renderer(self, heightMapRuler, 8000, "Attributes", uiCommand)
+function World:RenderAttributes(uiCommand, mapRuler)
+  mapRuler = mapRuler or heightMapRuler
+  local renderer = Renderer(self, mapRuler, 8000, "Attributes", uiCommand)
   tInsert(self.renderers, renderer)
+end
+
+function World:RenderHeightImage(uiCommand, mapRuler)
+  mapRuler = mapRuler or L3DTMapRuler
+  doNotStore = true
+  ClearSpeedupStorage()
+  self.heightBuf = nil
+  local tempHeightBuf = HeightBuffer(self, mapRuler)
+  tInsert(self.renderers, Renderer(self, mapRuler, 4000, "Height", uiCommand, tempHeightBuf))
+  tInsert(self.renderers, Renderer(self, mapRuler, 15000, "HeightImage", uiCommand, tempHeightBuf, true))
 end
 
 function World:RenderMetal(uiCommand)
@@ -1034,6 +1073,7 @@ function Renderer:Preinitialize()
 end
 
 function Renderer:Initialize()
+  spEcho("initializing " .. self.renderType)
   self.totalProgress = self.totalPixels
   self:InitFunc()
   self.initialized = true
@@ -1072,7 +1112,7 @@ function Renderer:EmptyInit()
   return
 end
 
-function Renderer:EmptyFinish()
+ function Renderer:EmptyFinish()
   -- spEcho("emptyfinish")
   return
 end
@@ -1100,6 +1140,7 @@ function Renderer:HeightFrame()
     if c.currentPixel > c.area then
       c.complete = true
       tRemove(self.craters, 1)
+      c = nil
     end
     if pixelsRendered == self.pixelsPerFrame then break end
   end
@@ -1169,6 +1210,12 @@ function Renderer:HeightImageFinish()
     "max: " .. self.heightBuf.maxHeight .. "\n\r" ..
     "range: " .. (self.heightBuf.maxHeight - self.heightBuf.minHeight))
   FWriteClose()
+  if self.mapRuler ~= heightMapRuler then
+    doNotStore = false
+    local world = self.heightBuf.world
+    self.heightBuf = nil
+    world.heightBuf = HeightBuffer(world, heightMapRuler)
+  end
 end
 
 function Renderer:HeightBlurInit()
@@ -1257,7 +1304,9 @@ function Renderer:AttributesFrame()
     local attribute = 0
     for i, c in ipairs(self.craters) do
       local a = c:AttributePixel(x, y)
-      if a ~= 0 and not (a == 5 and (attribute == 1 or attribute == 4 or attribute == 6 or attribute == 2 or attribute == 7)) then attribute = a end
+      if a ~= 0 and not AttributeOverlapExclusions[a][attribute] then
+        attribute = a
+      end
     end
     -- local aRGB = {mFloor((x / self.world.renderWidth) * 255), mFloor((y / self.world.renderHeight) * 255), mFloor((p / self.world.totalPixels) * 255)}
     local threechars = AttributeDict[attribute].threechars
@@ -1331,6 +1380,7 @@ end
 
 function Crater:GetDistanceSq(x, y)
   local dx, dy = mAbs(x-self.x), mAbs(y-self.y)
+  if doNotStore then return ((dx*dx) + (dy*dy)) end
   diffDistancesSq[dx] = diffDistancesSq[dx] or {}
   diffDistancesSq[dx][dy] = diffDistancesSq[dx][dy] or ((dx*dx) + (dy*dy))
   return diffDistancesSq[dx][dy]
@@ -1338,6 +1388,7 @@ end
 
 function Crater:GetDistance(x, y)
   local dx, dy = mAbs(x-self.x), mAbs(y-self.y)
+  if doNotStore then return sqrt((dx*dx) + (dy*dy)) end
   diffDistances[dx] = diffDistances[dx] or {}
   if not diffDistances[dx][dy] then
     local distSq = self:GetDistanceSq(x, y)
@@ -1477,7 +1528,6 @@ function Crater:AttributePixel(x, y)
       metalRatio = mSmoothstep(0, 1, metalRatio)
       local mx, my = mFloor(dx+self.metalNoise.halfSideLength+3), mFloor(dy+self.metalNoise.halfSideLength+3)
       local metal = self.metalNoise:Get(mx, my) * metalRatio
-      spEcho(metal)
       if metal > 0.25 then return 7 end
     end
     if meteor.complex then
@@ -1610,6 +1660,7 @@ function TwoDimensionalNoise:Get(x, y)
     if not self.xy[x][y] then return 0 end
     return self.xy[x][y]
   end
+  if not self.yx then return 0 end
   if not self.yx[y] then return 0 end
   if not self.yx[y][x] then return 0 end
   return (self.yx[y][x] + 1) * self.intensity
@@ -1624,7 +1675,8 @@ if gadgetHandler:IsSyncedCode() then -- BEGIN SYNCED -------------------------
 function gadget:Initialize()
   heightMapRuler = MapRuler(nil, (Game.mapSizeX / Game.squareSize) + 1, (Game.mapSizeZ / Game.squareSize) + 1)
   metalMapRuler = MapRuler(16, (Game.mapSizeX / 16), (Game.mapSizeZ / 16))
-  myWorld = World(3, 1000)
+  L3DTMapRuler = MapRuler(4, (Game.mapSizeX / 4), (Game.mapSizeZ / 4))
+  myWorld = World(2.32, 1000)
 end
 
 function gadget:Shutdown()
@@ -1656,6 +1708,10 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld.heightBuf:SendFile(uiCommand)
     elseif commandWord == "attributes" then
       myWorld:RenderAttributes(uiCommand)
+    elseif commandWord == "attributesl3dt" then
+      myWorld:RenderAttributes(uiCommand, L3DTMapRuler)
+    elseif commandWord == "heightl3dt" then
+      myWorld:RenderHeightImage(uiCommand, L3DTMapRuler)
     elseif commandWord == "metal" then
       myWorld:RenderMetal(uiCommand)
     elseif commandWord == "features" then
@@ -1689,6 +1745,11 @@ function gadget:RecvLuaMsg(msg, playerID)
       myWorld:RenderMetal()
       myWorld:RenderAttributes()
       myWorld.heightBuf:SendFile(uiCommand)
+    elseif commandWord == "renderalll3dt" then
+      myWorld:RenderFeatures()
+      myWorld:RenderMetal()
+      myWorld:RenderAttributes(nil, L3DTMapRuler)
+      myWorld:RenderHeightImage(uiCommand, L3DTMapRuler)
     end
   end
 end
@@ -1700,6 +1761,7 @@ function gadget:GameFrame(frame)
     if renderer.complete then
       -- spEcho(renderer.renderType, "complete", #myWorld.renderers)
       tRemove(myWorld.renderers, 1)
+      renderer = nil
     end
   end
   if not gadgetInitialized then 
