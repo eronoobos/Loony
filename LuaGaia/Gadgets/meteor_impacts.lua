@@ -565,7 +565,7 @@ Crater = class(function(a, meteor, renderer)
 end)
 
 -- Meteor stores data and does meteor impact model calculations
--- meteor impact model equations based on 
+-- meteor impact model equations based on http://impact.ese.ic.ac.uk/ImpactEffects/effects.pdf
 Meteor = class(function(a, world, sx, sz, diameterImpactor, velocityImpactKm, angleImpact, densityImpactor, age, metal, geothermal)
   -- coordinates sx and sz are in spring coordinates (elmos)
   a.world = world
